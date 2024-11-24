@@ -68,13 +68,6 @@ jobs:
     steps:
       - name: Git safe directory
         run: git config --global --add safe.directory `pwd`
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          repository: nocobase,${{ inputs.repository }}
-          skip-token-revoke: true
       - name: Checkout nocobase/nocobase
         uses: actions/checkout@v4
         with:
@@ -86,14 +79,14 @@ jobs:
         with:
           path: packages/pro-plugins
           ref: ${{ inputs.branch || 'main' }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Checkout ${{ inputs.repository }}
         uses: actions/checkout@v4
         if: ${{ inputs.repository != 'pro-plugins' }}
         with:
           path: packages/pro-plugins
           ref: ${{ inputs.branch || 'main' }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Use Node.js ${{ matrix.node_version }}
         uses: actions/setup-node@v4
         with:
