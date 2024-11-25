@@ -75,3 +75,5 @@ jobs:
           gh api -X PATCH /repos/nocobase/${{ inputs.repository }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ steps.merge.outcome }}'
+        env: 
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
