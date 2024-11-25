@@ -84,7 +84,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
       - name: Checkout pro-plugins pr
-        if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
+        if: ${{ inputs.pro_plugin == 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
           cd ./packages/pro-plugins/
@@ -100,7 +100,7 @@ jobs:
           git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/$repo.git packages/pro-plugins/@nocobase/$repo
           done
       - name: Checkout pro pr
-        if: ${{ inputs.repository != 'pro-plugins' && inputs.pro_pr_number != '' }}
+        if: ${{ inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
           cd ./packages/pro-plugins/@nocobase/plugin-${{ inputs.pro_plugin }}
