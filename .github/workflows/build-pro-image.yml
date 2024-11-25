@@ -175,7 +175,7 @@ jobs:
             BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
             APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
           push: true
-          tags: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }} 
+          tags: ${{ steps.set-tags.outputs.tags }}
       - name: Deploy NocoBase
         env:
           IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
