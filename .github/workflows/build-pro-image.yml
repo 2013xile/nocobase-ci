@@ -208,5 +208,6 @@ jobs:
           gh api -X PATCH /repos/nocobase/${{ steps.get-info.outputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
+             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
         env: 
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
