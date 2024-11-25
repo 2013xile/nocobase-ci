@@ -67,7 +67,7 @@ jobs:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase,pro-plugins,${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
+          repositories: nocobase,pro-plugins,${{ steps.get-info.outputs.repository }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
           skip-token-revoke: true
       - name: Checkout
         uses: actions/checkout@v3
