@@ -48,7 +48,7 @@ jobs:
             else 
               echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
             fi
-          elif [ -n "${{ inputs.nocobase_pr_number }}" ]
+          elif [ -n "${{ inputs.nocobase_pr_number }}" ]; then
             echo "imageTag=$(echo 'pr-${{ inputs.nocobase_pr_number }}')" >> $GITHUB_OUTPUT
           else
             echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
