@@ -48,8 +48,10 @@ jobs:
           fi
           if [ -n "${{ inputs.pro_pr_number }}" ]; then
             if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
+              echo "repository=$(echo 'pro-plugins')" >> $GITHUB_OUTPUT
               echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-pro')" >> $GITHUB_OUTPUT
             else 
+              echo "repository=$(echo 'plugin-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
               echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
             fi
           elif [ -n "${{ inputs.nocobase_pr_number }}" ]; then
@@ -106,14 +108,14 @@ jobs:
       - name: Clone pro repo
         shell: bash
         run: |
-          if [ -d "./packages/pro_plugin/@nocobase/plugin-${{ inputs.pro_plugin }}" ]; then
-            git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/plugin-${{ inputs.pro_plugin }}.git packages/pro-plugins/@nocobase/plugin-${{ inputs.pro_plugin }}
+          if [ ! -d "packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}" ]; then
+            git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ steps.get-info.outputs.repository }}.git packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}
           fi
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
-          cd ./packages/pro-plugins/@nocobase/plugin-${{ inputs.pro_plugin }}
+          cd ./packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}
           gh pr checkout ${{ inputs.pr_number }}
           cd ../../../../
         env:
@@ -125,6 +127,9 @@ jobs:
           do
             rm -rf packages/pro-plugins/@nocobase/$repo/.git
           done
+          if [ -d "packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}/.git" ]; then
+            rm -rf packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}/.git
+          fi
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name" && git add -A && git commit -m "tmp commit"
       - name: Set up QEMU
@@ -197,7 +202,7 @@ jobs:
       - name: Update success status
         if: always()
         run: |
-          gh api -X PATCH /repos/nocobase/${{ inputs.pro_plugin }}/check-runs/${{ inputs.checkRunId }} \
+          gh api -X PATCH /repos/nocobase/${{ steps.get-info.outputs.repository }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
         env: 
