@@ -12,6 +12,7 @@ on:
     inputs:
       repository:
         description: 'pro repository name'
+        default: 'pro-plugins'
       branch:
         description: 'branch'
       baseBranch:
@@ -102,6 +103,7 @@ jobs:
             ./node_modules/.bin/tsx packages/core/test/src/scripts/test-db-creator.ts &
             sleep 1
             yarn test --server --single-thread=false
+          fi
         env:
           LOGGER_LEVEL: error
           ENCRYPTION_FIELD_KEY: '66036232662082160067048057423456'
@@ -153,13 +155,6 @@ jobs:
     steps:
       - name: Git safe directory
         run: git config --global --add safe.directory `pwd`
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          repository: nocobase,${{ inputs.repository }}
-          skip-token-revoke: true
       - name: Checkout nocobase/nocobase
         uses: actions/checkout@v4
         with:
@@ -171,14 +166,14 @@ jobs:
         with:
           path: packages/pro-plugins
           ref: ${{ inputs.branch || 'main' }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Checkout ${{ inputs.repository }}
         uses: actions/checkout@v4
         if: ${{ inputs.repository != 'pro-plugins' }}
         with:
           path: packages/pro-plugins
           ref: ${{ inputs.branch || 'main' }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Use Node.js ${{ matrix.node_version }}
         uses: actions/setup-node@v4
         with:
@@ -194,6 +189,7 @@ jobs:
             ./node_modules/.bin/tsx packages/core/test/src/scripts/test-db-creator.ts &
             sleep 1
             yarn test --server --single-thread=false
+          fi
         env:
           LOGGER_LEVEL: error
           ENCRYPTION_FIELD_KEY: '66036232662082160067048057423456'
