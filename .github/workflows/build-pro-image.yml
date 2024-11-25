@@ -149,51 +149,50 @@ jobs:
           echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
           echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
         id: vars
-      - name: Build and push
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          file: Dockerfile
-          build-args: |
-            VERDACCIO_URL=http://localhost:4873/
-            COMMIT_HASH=${GITHUB_SHA}
-            PLUGINS_DIRS=pro-plugins
-            BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
-            APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
-          push: true
-          tags: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }} 
-      - name: Deploy NocoBase
-        env:
-          IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
-        run: |
-          echo $IMAGE_TAG
-          export APP_NAME=$(echo $IMAGE_TAG | cut -d ":" -f 2)
-          echo $APP_NAME
-          curl --retry 2 --location --request POST "${{secrets.NOCOBASE_DEPLOY_HOST}}$APP_NAME" \
-            --header 'Content-Type: application/json' \
-            -d "{
-                \"tag\": \"$APP_NAME\",
-                \"dialect\": \"postgres\"
-            }"
-      - name: Deploy NocoBase V2
-        env:
-          IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
-        run: |
-          echo $IMAGE_TAG
-          export APP_NAME=$(echo $IMAGE_TAG | cut -d ":" -f 2)
-          echo $APP_NAME
-          curl --retry 2 --location --request POST "${{secrets.NOCOBASE_DEPLOY_HOST_V2}}$APP_NAME" \
-            --header 'Content-Type: application/json' \
-            -d "{
-                \"tag\": \"$APP_NAME\",
-                \"dialect\": \"postgres\"
-            }"
+      # - name: Build and push
+      #   uses: docker/build-push-action@v3
+      #   with:
+      #     context: .
+      #     file: Dockerfile
+      #     build-args: |
+      #       VERDACCIO_URL=http://localhost:4873/
+      #       COMMIT_HASH=${GITHUB_SHA}
+      #       PLUGINS_DIRS=pro-plugins
+      #       BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
+      #       APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
+      #     push: true
+      #     tags: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }} 
+      # - name: Deploy NocoBase
+      #   env:
+      #     IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
+      #   run: |
+      #     echo $IMAGE_TAG
+      #     export APP_NAME=$(echo $IMAGE_TAG | cut -d ":" -f 2)
+      #     echo $APP_NAME
+      #     curl --retry 2 --location --request POST "${{secrets.NOCOBASE_DEPLOY_HOST}}$APP_NAME" \
+      #       --header 'Content-Type: application/json' \
+      #       -d "{
+      #           \"tag\": \"$APP_NAME\",
+      #           \"dialect\": \"postgres\"
+      #       }"
+      # - name: Deploy NocoBase V2
+      #   env:
+      #     IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
+      #   run: |
+      #     echo $IMAGE_TAG
+      #     export APP_NAME=$(echo $IMAGE_TAG | cut -d ":" -f 2)
+      #     echo $APP_NAME
+      #     curl --retry 2 --location --request POST "${{secrets.NOCOBASE_DEPLOY_HOST_V2}}$APP_NAME" \
+      #       --header 'Content-Type: application/json' \
+      #       -d "{
+      #           \"tag\": \"$APP_NAME\",
+      #           \"dialect\": \"postgres\"
+      #       }"
       - name: Update success status
         if: always()
         run: |
           gh api -X PATCH /repos/nocobase/${{ inputs.repository }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
-             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ inputs.checkRunId }}'
         env: 
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
