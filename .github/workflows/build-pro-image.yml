@@ -1,8 +1,10 @@
 name: Build pro image
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.branch }}
+  group: ${{ github.workflow }}-${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
   cancel-in-progress: true
+
+run-name: Build pro image ${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
 
 on:
   workflow_dispatch:
@@ -16,6 +18,8 @@ on:
         description: 'pro-plugins or plugin name (without plugin-)'
       pro_pr_number:
         description: 'pro repo pr number'
+      checkRunId:
+        description: 'check run id'
 
 jobs:
   get-plugins:
@@ -184,3 +188,12 @@ jobs:
                 \"tag\": \"$APP_NAME\",
                 \"dialect\": \"postgres\"
             }"
+      - name: Update success status
+        if: always()
+        run: |
+          gh api -X PATCH /repos/nocobase/${{ inputs.repository }}/check-runs/${{ inputs.checkRunId }} \
+             -F 'status=completed' \
+             -F 'conclusion=${{ job.status }}' \
+             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ inputs.checkRunId }}'
+        env: 
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
