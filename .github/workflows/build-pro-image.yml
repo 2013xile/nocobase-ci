@@ -63,7 +63,7 @@ jobs:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase,pro-plugins,${{ join(fromJSON(steps.get-info.outputs.proRepos), ',') }}
+          repositories: nocobase,pro-plugins,${{ inputs.pro_plugin }},${{ join(fromJSON(steps.get-info.outputs.proRepos), ',') }}
           skip-token-revoke: true
       - name: Checkout
         uses: actions/checkout@v3
@@ -103,6 +103,12 @@ jobs:
           do
           git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/$repo.git packages/pro-plugins/@nocobase/$repo
           done
+      - name: Clone pro repo
+        shell: bash
+        run: |
+          if [ -d "./packages/pro_plugin/@nocobase/plugin-${{ inputs.pro_plugin }}" ]; then
+            git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ inputs.pro_plugin }}.git packages/pro-plugins/@nocobase/${{ inputs.pro_plugin }}
+          fi
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
@@ -191,7 +197,7 @@ jobs:
       - name: Update success status
         if: always()
         run: |
-          gh api -X PATCH /repos/nocobase/${{ inputs.repository }}/check-runs/${{ inputs.checkRunId }} \
+          gh api -X PATCH /repos/nocobase/${{ inputs.pro_plugin }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
         env: 
