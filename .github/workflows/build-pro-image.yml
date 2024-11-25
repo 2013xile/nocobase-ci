@@ -116,7 +116,7 @@ jobs:
         shell: bash
         run: |
           cd ./packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}
-          gh pr checkout ${{ inputs.pr_number }}
+          gh pr checkout ${{ inputs.pro_pr_number }}
           cd ../../../../
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
