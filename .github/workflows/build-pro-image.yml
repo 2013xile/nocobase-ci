@@ -4,7 +4,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
   cancel-in-progress: true
 
-run-name: Build pro image ${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
+run-name: ${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.repository }}-${{ inputs.pro_pr_number }}
 
 on:
   workflow_dispatch:
@@ -18,6 +18,8 @@ on:
         description: 'pro-plugins or plugin name (without plugin-)'
       pro_pr_number:
         description: 'pro repo pr number'
+      repository:
+        description: 'repo name'
       checkRunId:
         description: 'check run id'
 
@@ -57,21 +59,21 @@ jobs:
           else
             echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
           fi
-          if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
-            echo "repository=$(echo 'pro-plugins')" >> $GITHUB_OUTPUT
-          elif [ -n "${{ inputs.pro_plugin }}" ]; then
-            echo "repository=$(echo 'plugin-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
-          else
-            echo "repository=$(echo 'nocobase')" >> $GITHUB_OUTPUT
-          fi
       - uses: actions/create-github-app-token@v1
         id: app-token
         with:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase,pro-plugins,${{ steps.get-info.outputs.repository }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
+          repositories: nocobase,pro-plugins,${{ inputs.repository }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
           skip-token-revoke: true
+      - name: Update in_progress status
+        run: |
+          gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
+             -F 'status=in_progress' \
+             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
+        env: 
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Checkout
         uses: actions/checkout@v3
         with:
@@ -95,7 +97,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
       - name: Checkout pro-plugins pr
-        if: ${{ inputs.pro_plugin == 'pro-plugins' && inputs.pro_pr_number != '' }}
+        if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
           cd ./packages/pro-plugins/
@@ -114,14 +116,14 @@ jobs:
         shell: bash
         if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' }}
         run: |
-          if [ ! -d "packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}" ]; then
-            git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ steps.get-info.outputs.repository }}.git packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}
+          if [ ! -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}" ]; then
+            git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ inputs.repository }}.git packages/pro-plugins/@nocobase/${{ inputs.repository }}
           fi
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
-          cd ./packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}
+          cd ./packages/pro-plugins/@nocobase/${{ inputs.repository }}
           gh pr checkout ${{ inputs.pro_pr_number }}
           cd ../../../../
         env:
@@ -133,8 +135,8 @@ jobs:
           do
             rm -rf packages/pro-plugins/@nocobase/$repo/.git
           done
-          if [ -d "packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}/.git" ]; then
-            rm -rf packages/pro-plugins/@nocobase/${{ steps.get-info.outputs.repository }}/.git
+          if [ -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}/.git" ]; then
+            rm -rf packages/pro-plugins/@nocobase/${{ inputs.repository }}/.git
           fi
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name" && git add -A && git commit -m "tmp commit"
@@ -208,7 +210,7 @@ jobs:
       - name: Update success status
         if: always()
         run: |
-          gh api -X PATCH /repos/nocobase/${{ steps.get-info.outputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
+          gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
              -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
