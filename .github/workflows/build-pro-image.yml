@@ -48,18 +48,21 @@ jobs:
           fi
           if [ -n "${{ inputs.pro_pr_number }}" ]; then
             if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
-              echo "repository=$(echo 'pro-plugins')" >> $GITHUB_OUTPUT
               echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-pro')" >> $GITHUB_OUTPUT
             else 
-              echo "repository=$(echo 'plugin-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
               echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
             fi
           elif [ -n "${{ inputs.nocobase_pr_number }}" ]; then
-            echo "repository=$(echo 'nocobase')" >> $GITHUB_OUTPUT
             echo "imageTag=$(echo 'pr-${{ inputs.nocobase_pr_number }}')" >> $GITHUB_OUTPUT
           else
-            echo "repository=$(echo 'nocobase')" >> $GITHUB_OUTPUT
             echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
+          fi
+          if [[ "${{ inputs.pro_plugin }}" == "pro_plugins" ]]; then
+            echo "repository=$(echo 'pro-plugins')" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.pro_plugin }}" ]; then
+            echo "repository=$(echo 'plugin-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
+          else
+            echo "repository=$(echo 'nocobase')" >> $GITHUB_OUTPUT
           fi
       - uses: actions/create-github-app-token@v1
         id: app-token
