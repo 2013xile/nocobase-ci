@@ -57,7 +57,7 @@ jobs:
           else
             echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
           fi
-          if [[ "${{ inputs.pro_plugin }}" == "pro_plugins" ]]; then
+          if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
             echo "repository=$(echo 'pro-plugins')" >> $GITHUB_OUTPUT
           elif [ -n "${{ inputs.pro_plugin }}" ]; then
             echo "repository=$(echo 'plugin-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
