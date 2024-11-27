@@ -68,6 +68,7 @@ jobs:
           repositories: nocobase,pro-plugins,${{ inputs.repository }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
           skip-token-revoke: true
       - name: Update in_progress status
+        if: ${{ inputs.checkRunId }}
         run: |
           gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=in_progress' \
@@ -208,7 +209,7 @@ jobs:
                 \"dialect\": \"postgres\"
             }"
       - name: Update success status
-        if: always()
+        if: ${{ inputs.checkRunId && always() }}
         run: |
           gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=completed' \
