@@ -88,7 +88,7 @@ jobs:
         run: |
           gh pr checkout ${{ inputs.nocobase_pr_number }}
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Checkout pro-plugins
         uses: actions/checkout@v3
         with:
@@ -105,7 +105,7 @@ jobs:
           gh pr checkout ${{ inputs.pro_pr_number }}
           cd ../../
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Clone pro repos
         shell: bash
         run: |
@@ -128,7 +128,7 @@ jobs:
           gh pr checkout ${{ inputs.pro_pr_number }}
           cd ../../../../
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: rm .git
         run: |
           rm -rf packages/pro-plugins/.git
