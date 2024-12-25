@@ -115,7 +115,7 @@ jobs:
         run: |
           cd ./packages/pro-plugins/
           gh pr checkout ${{ inputs.pro_pr_number }}
-          cd ../../../../
+          cd ../../
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Clone pro repos
@@ -139,7 +139,7 @@ jobs:
           for plugins in ./packages/pro-plugins/@nocobase/*; do
             cd "$plugins"
             git checkout ${{ steps.get-branch.outputs.baseBranch }} || continue
-            cd ../../
+            cd ../../../../
           done
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
