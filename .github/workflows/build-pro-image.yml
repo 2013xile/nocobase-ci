@@ -89,6 +89,11 @@ jobs:
           gh pr checkout ${{ inputs.nocobase_pr_number }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Get branch
+        id: get-branch
+        shell: bash
+        run: |
+            echo "baseBranch=$(git branch --show-current)" >> $GITHUB_OUTPUT
       - name: Checkout pro-plugins
         uses: actions/checkout@v3
         with:
@@ -97,6 +102,13 @@ jobs:
           path: packages/pro-plugins
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
+      - name: Try checkout pro-plugins branch
+        shell: bash
+        continue-on-error: true
+        run: |
+          cd ./packages/pro-plugins/
+          git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+          cd ../../
       - name: Checkout pro-plugins pr
         if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
@@ -120,6 +132,16 @@ jobs:
           if [ ! -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}" ]; then
             git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ inputs.repository }}.git packages/pro-plugins/@nocobase/${{ inputs.repository }}
           fi
+      - name: Try checkout pro repos branch
+        shell: bash
+        continue-on-error: true
+        run: |
+          for plugins in ./packages/pro-plugins/@nocobase/*; do
+            echo "$plugins"
+            cd "$plugins"
+            git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+            cd ../../../../
+          done
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
