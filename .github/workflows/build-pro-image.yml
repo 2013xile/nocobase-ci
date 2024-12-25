@@ -138,7 +138,7 @@ jobs:
         run: |
           for plugins in ./packages/pro-plugins/@nocobase/*; do
             cd "$plugins"
-            git checkout ${{ setps.get-branch.outputs.baseBranch }} || true
+            git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
             cd ../../
           done
       - name: Checkout pro pr
