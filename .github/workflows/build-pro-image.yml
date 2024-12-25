@@ -107,7 +107,7 @@ jobs:
         continue-on-error: true
         run: |
           cd ./packages/pro-plugins/
-          git checkout ${{ setps.get-branch.outputs.baseBranch }} || true
+          git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
           cd ../../
       - name: Checkout pro-plugins pr
         if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
