@@ -115,7 +115,7 @@ jobs:
         run: |
           cd ./packages/pro-plugins/
           gh pr checkout ${{ inputs.pro_pr_number }}
-          cd ../../
+          cd ../../../../
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Clone pro repos
