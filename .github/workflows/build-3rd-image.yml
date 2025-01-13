@@ -105,7 +105,7 @@ jobs:
           echo "::set-output name=tags::${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}"
       - name: Set variables
         run: |
-          target_directory="./packages/${{ inputs.repository }}"
+          target_directory="./packages/plugins/@${{ inputs.repository }}"
           subdirectories=$(find "$target_directory" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | tr '\n' ' ')
           trimmed_variable=$(echo "$subdirectories" | xargs)
           packageNames="@${{ inputs.repository }}/${trimmed_variable// / @${{ inputs.repository }}/}"
