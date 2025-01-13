@@ -111,7 +111,7 @@ jobs:
           packageNames="@${{ inputs.repository }}/${trimmed_variable// / @${{ inputs.repository }}/}"
           pluginNames="${trimmed_variable//plugin-/}"
           BEFORE_PACK_NOCOBASE="yarn add $packageNames -W --production"
-          APPEND_PRESET_LOCAL_PLUGINS="${pluginNames// /,}"
+          APPEND_PRESET_LOCAL_PLUGINS="${packageNames// /,}"
           echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
           echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
         id: vars
