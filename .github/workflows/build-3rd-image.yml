@@ -70,21 +70,21 @@ jobs:
         with:
           repository: nocobase/${{ inputs.repository }}
           ref: ${{ inputs.branch }}
-          path: packages/${{ inputs.repository }}
+          path: packages/plugins/@${{ inputs.repository }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
       - name: Checkout repository pr
         if: ${{ inputs.repo_pr_number != '' }}
         shell: bash
         run: |
-          cd ./packages/${{ inputs.repository }}/
+          cd ./packages/plugins/@${{ inputs.repository }}/
           gh pr checkout ${{ inputs.repo_pr_number }}
-          cd ../../
+          cd ../../../
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: rm .git
         run: |
-          rm -rf packages/${{ inputs.repository }}/.git
+          rm -rf packages/plugins/@${{ inputs.repository }}/.git
           git config --global user.email "you@example.com"
           git config --global user.name "Your Name" && git add -A && git commit -m "tmp commit"
       - name: Set up QEMU
