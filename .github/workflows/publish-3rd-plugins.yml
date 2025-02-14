@@ -103,6 +103,7 @@ jobs:
       - name: Tag and push
         run: |
           cd ./packages/plugins/@${{ inputs.repository }}
+          git add .
           git commit -m "chore(versions): 😊 publish v${{ steps.get-version.outputs.version }}"
           git tag v${{ steps.get-version.outputs.version }}
           # git push origin ${{ inputs.branch }} --atomic --tags
