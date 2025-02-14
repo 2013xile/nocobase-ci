@@ -14,6 +14,7 @@ on:
         required: true
       repository:
         description: 'repo name'
+        required: true
 
 jobs:
   publish:
@@ -93,7 +94,7 @@ jobs:
       - name: Update version
         run: |
           for plugin in ./packages/plugins/@${{ inputs.repository }}/*/; do
-            if [[ "$plugin" == "*plugin-*" ]]; then
+            if [[ "$plugin" == *plugin-* ]]; then
               echo "$plugin"
               cd "$plugin"
               npm version ${{ steps.get-version.outputs.version }}
@@ -137,7 +138,7 @@ jobs:
       #   run: |
       #     npm config set //pkg.nocobase.com/:_authToken=${{ env.PKG_NOCOBASE_TOKEN }}
       #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*/; do
-      #       if [[ "$plugin" == "*plugin-*" ]]; then
+      #       if [[ "$plugin" == *plugin-* ]]; then
       #         echo "$plugins"
       #         cd "$plugins"
       #         npm publish --registry https://pkg.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
@@ -158,7 +159,7 @@ jobs:
       #     done
       #     npm config set //pkg-src.nocobase.com/:_authToken=${{ env.PKG_SRC_NOCOBASE_TOKEN }}
       #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*/; do
-      #       if [[ "$plugin" == "*plugin-*" ]]; then
+      #       if [[ "$plugin" == *plugin-* ]]; then
       #         echo "$plugins"
       #         cd "$plugins"
       #         npm publish --registry https://pkg-src.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
