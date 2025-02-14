@@ -27,13 +27,13 @@ jobs:
       - name: Get info
         id: get-info
         run: |
-          if [[ "${{ inputs.baseBranch }}" == "main" ]]; then
+          if [[ "${{ inputs.branch }}" == "main" ]]; then
             echo "defaultTag=$(echo 'latest')" >> $GITHUB_OUTPUT
             echo "nextBranch=$(echo 'next')" >> $GITHUB_OUTPUT
-          elif [[ "${{ inputs.baseBranch }}" == "next" ]]; then
+          elif [[ "${{ inputs.branch }}" == "next" ]]; then
             echo "defaultTag=$(echo 'beta')" >> $GITHUB_OUTPUT
             echo "nextBranch=$(echo 'develop')" >> $GITHUB_OUTPUT
-          elif [[ "${{ inputs.baseBranch }}" == "develop" ]]; then
+          elif [[ "${{ inputs.branch }}" == "develop" ]]; then
             echo "defaultTag=$(echo 'alpha')" >> $GITHUB_OUTPUT
           else
             exit 1
@@ -74,10 +74,10 @@ jobs:
         if: ${{ steps.get-info.outputs.nextBranch }}
         run: |
           cd ./packages/plugins/@${{ inputs.repository }}
-          git checkout ${{ inputs.baseBranch }}
-          git pull origin ${{ inputs.baseBranch }}
+          git checkout ${{ inputs.branch }}
+          git pull origin ${{ inputs.branch }}
           git checkout ${{ steps.get-info.outputs.nextBranch }}
-          git merge ${{ inputs.baseBranch }}
+          git merge ${{ inputs.branch }}
           git push origin ${{ steps.get-info.outputs.nextBranch }} --tags --atomic
           cd ../../../
       - name: yarn install and build
@@ -102,14 +102,14 @@ jobs:
           cd ./packages/plugins/@${{ inputs.repository }}
           git commit -m "chore(versions): 😊 publish v${{ steps.get-version.outputs.version }}"
           git tag v${{ steps.get-version.outputs.version }}
-          # git push origin ${{ inputs.baseBranch }} --atomic --tags
+          # git push origin ${{ inputs.branch }} --atomic --tags
           cd ../.../../
       - name: Merge
         if: ${{ steps.get-info.outputs.nextBranch }}
         run: |
           cd ./packages/plugins/@${{ inputs.repository }}
           git checkout ${{ steps.get-info.outputs.nextBranch }}
-          git merge -X ours ${{ inputs.baseBranch }} --no-edit
+          git merge -X ours ${{ inputs.branch }} --no-edit
           git push origin ${{ steps.get-info.outputs.nextBranch }} --tags --atomic
           cd ../../../
       # - name: Send curl request and parse response
