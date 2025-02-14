@@ -97,7 +97,7 @@ jobs:
             if [[ "$plugin" == *plugin-* ]]; then
               echo "$plugin"
               cd "$plugin"
-              npm version ${{ steps.get-version.outputs.version }} --no-git-tag-version --force
+              yarn version --new-version ${{ steps.get-version.outputs.version }} --no-git-tag-version
               cd ../../../../
             fi
           done
