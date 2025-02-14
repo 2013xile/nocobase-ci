@@ -80,6 +80,7 @@ jobs:
           git checkout ${{ steps.get-info.outputs.nextBranch }}
           git merge ${{ inputs.branch }}
           git push origin ${{ steps.get-info.outputs.nextBranch }} --tags --atomic
+          git checkout ${{ inputs.branch }}
           cd ../../../
       - name: yarn install and build
         run: |
