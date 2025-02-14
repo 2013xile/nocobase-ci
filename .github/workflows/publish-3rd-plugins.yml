@@ -84,18 +84,21 @@ jobs:
         run: |
           yarn config set registry https://registry.npmjs.org/
           yarn install
-          yarn build
+          yarn build packages/core
+          yarn build packages/plugins/@${{ inputs.repository }}
       - name: Get version
         id: get-version
         run: |
           echo "version=$(jq -r '.version' ./lerna.json)" >> $GITHUB_OUTPUT
       - name: Update version
         run: |
-          for plugins in ./packages/plugins/@${{ inputs.repository }}/*; do
-            echo "$plugins"
-            cd "$plugins"
-            npm version ${{ steps.get-version.outputs.version }}
-            cd ../../../../
+          for plugin in ./packages/plugins/@${{ inputs.repository }}/*/; do
+            if [[ "$plugin" == "plugin-*" ]]; then
+              echo "$plugin"
+              cd "$plugin"
+              npm version ${{ steps.get-version.outputs.version }}
+              cd ../../../../
+            fi
           done
       - name: Tag and push
         run: |
@@ -103,7 +106,7 @@ jobs:
           git commit -m "chore(versions): 😊 publish v${{ steps.get-version.outputs.version }}"
           git tag v${{ steps.get-version.outputs.version }}
           # git push origin ${{ inputs.branch }} --atomic --tags
-          cd ../.../../
+          cd ../../../
       - name: Merge
         if: ${{ steps.get-info.outputs.nextBranch }}
         run: |
@@ -132,11 +135,13 @@ jobs:
       # - name: publish pkg.nocobase.com
       #   run: |
       #     npm config set //pkg.nocobase.com/:_authToken=${{ env.PKG_NOCOBASE_TOKEN }}
-      #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*; do
-      #       echo "$plugins"
-      #       cd "$plugins"
-      #       npm publish --registry https://pkg.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
-      #       cd ../../../../
+      #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*/; do
+      #       if [[ "$plugin" == "plugin-*" ]]; then
+      #         echo "$plugins"
+      #         cd "$plugins"
+      #         npm publish --registry https://pkg.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
+      #         cd ../../../../
+      #       fi    
       #     done
       # - name: publish pkg-src.nocobase.com
       #   run: |
@@ -151,9 +156,11 @@ jobs:
       #       echo "$CONTENT" > $FILE
       #     done
       #     npm config set //pkg-src.nocobase.com/:_authToken=${{ env.PKG_SRC_NOCOBASE_TOKEN }}
-      #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*; do
-      #       echo "$plugins"
-      #       cd "$plugins"
-      #       npm publish --registry https://pkg-src.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
-      #       cd ../../../../
+      #     for plugins in ./packages/plugins/@${{ inputs.repository }}/*/; do
+      #       if [[ "$plugin" == "plugin-*" ]]; then
+      #         echo "$plugins"
+      #         cd "$plugins"
+      #         npm publish --registry https://pkg-src.nocobase.com --tag ${{ steps.get-info.outputs.defaultTag }}
+      #         cd ../../../../
+      #       fi
       #     done
