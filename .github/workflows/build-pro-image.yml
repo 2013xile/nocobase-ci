@@ -177,6 +177,15 @@ jobs:
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
           username: ${{ secrets.ALI_DOCKER_USERNAME }}
           password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+      - name: Clean up Docker space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          docker system df
+          docker system prune -af
+          docker volume prune -f
+          echo "After cleanup:"
+          df -h
       - name: Set tags
         id: set-tags
         run: |
