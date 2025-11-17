@@ -188,9 +188,7 @@ jobs:
           df -h
       - name: free disk space
         run: |
-          sudo swapoff -a
-          sudo rm -f /swapfile
-          sudo apt clean
+          sudo rm -rf /opt/hostedtoolcache
           df -h
       - name: Set tags
         id: set-tags
