@@ -103,7 +103,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
       - name: Try checkout pro-plugins branch
-        if: ${{ inputs.pro_pr_number == '' }}
+        if: ${{ inputs.repository != 'pro-plugins' || inputs.pro_pr_number == '' }}
         shell: bash
         continue-on-error: true
         run: |
