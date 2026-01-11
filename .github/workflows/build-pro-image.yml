@@ -206,6 +206,12 @@ jobs:
           echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
           echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
         id: vars
+      - name: Append to .env
+        run: |
+          echo "CDN_ALI_OSS_ACCESS_KEY_ID=${{ secrets.CDN_ALI_OSS_ACCESS_KEY_ID }}" >> .env
+          echo "CDN_ALI_OSS_ACCESS_KEY_SECRET=${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}" >> .env
+          echo "CDN_ALI_OSS_BUCKET=${{ secrets.CDN_ALI_OSS_BUCKET }}" >> .env
+          echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
