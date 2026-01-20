@@ -232,7 +232,7 @@ jobs:
 
           case "$branch" in
             main|next|develop)
-              if [ -z "$nocobase_pr" ] || [ -z "$pro_pr" ]; then
+              if [ -z "$nocobase_pr" ] && [ -z "$pro_pr" ]; then
                 should_build_all=true
               fi
               ;;
