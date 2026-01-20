@@ -214,12 +214,14 @@ jobs:
           echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
       - name: build docs
         run: |
-          cd docs
-          yarn install
-          if [ -f ./build-all.sh ]; then
-            ./build-all.sh
+          if [ -d docs ]; then
+            cd docs
+            yarn install
+              if [ -f ./build-all.sh ]; then
+              ./build-all.sh
+            fi
+            rm -rf node_modules dist
           fi
-          rm -rf node_modules dist
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
