@@ -214,9 +214,19 @@ jobs:
           echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
       - name: build docs
         run: |
-          cd docs && \
-          yarn install && \
-          ./build-all.sh && \
+          cd docs
+          yarn install
+          yarn build
+          for dir in ./docs/*; do
+            if [ -d "$dir" ]; then
+              lang=$(basename "$dir")
+              if [ "$lang" = "en" ]; then
+                continue
+              fi
+              echo "Building $lang..."
+              yarn build --lang=$lang
+            fi
+          done
           rm -rf node_modules
       - name: Build and push
         uses: docker/build-push-action@v3
