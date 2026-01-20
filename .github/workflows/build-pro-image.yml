@@ -245,6 +245,7 @@ jobs:
             echo "Running normal build"
             yarn build
             yarn build --lang=cn
+            tar -czf dist.tar.gz -C ./dist .
           fi
 
           rm -rf node_modules dist
