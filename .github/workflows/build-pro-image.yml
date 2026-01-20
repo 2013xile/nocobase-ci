@@ -214,22 +214,40 @@ jobs:
           echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
       - name: build docs
         run: |
-          if [ -d docs ]; then
-            cd docs
-            yarn install
-            # 如果是 branch 是 main,next,develop
-            # 并且 nocobase_pr_number 和 pro_pr_number 为空
-            # 则执行 build-all.sh
-            if [ "${{ inputs.branch }}" == "main" || "${{ inputs.branch }}" == "next" || "${{ inputs.branch }}" == "develop" ] && [ -z "${{ inputs.nocobase_pr_number }}" ] && [ -z "${{ inputs.pro_pr_number }}" ]; then
-              if [ -f ./build-all.sh ]; then
-                ./build-all.sh
-              fi
-            else
-              yarn build
-              yarn build --lang=cn
-            fi
-            rm -rf node_modules dist
+          set -e
+
+          if [ ! -d docs ]; then
+            exit 0
           fi
+
+          cd docs
+
+          yarn install
+
+          branch="${{ inputs.branch }}"
+          nocobase_pr="${{ inputs.nocobase_pr_number }}"
+          pro_pr="${{ inputs.pro_pr_number }}"
+
+          should_build_all=false
+
+          case "$branch" in
+            main|next|develop)
+              if [ -z "$nocobase_pr" ] || [ -z "$pro_pr" ]; then
+                should_build_all=true
+              fi
+              ;;
+          esac
+
+          if [ "$should_build_all" = true ] && [ -f ./build-all.sh ]; then
+            echo "Running build-all.sh"
+            ./build-all.sh
+          else
+            echo "Running normal build"
+            yarn build
+            yarn build --lang=cn
+          fi
+
+          rm -rf node_modules dist
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
