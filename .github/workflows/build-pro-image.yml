@@ -216,18 +216,10 @@ jobs:
         run: |
           cd docs
           yarn install
-          yarn build
-          for dir in ./docs/*; do
-            if [ -d "$dir" ]; then
-              lang=$(basename "$dir")
-              if [ "$lang" = "en" ]; then
-                continue
-              fi
-              echo "Building $lang..."
-              yarn build --lang=$lang
-            fi
-          done
-          rm -rf node_modules
+          if [ -f ./build-all.sh ]; then
+            ./build-all.sh
+          fi
+          rm -rf node_modules dist
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
