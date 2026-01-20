@@ -217,8 +217,16 @@ jobs:
           if [ -d docs ]; then
             cd docs
             yarn install
+            # 如果是 branch 是 main,next,develop
+            # 并且 nocobase_pr_number 和 pro_pr_number 为空
+            # 则执行 build-all.sh
+            if [ "${{ inputs.branch }}" == "main" || "${{ inputs.branch }}" == "next" || "${{ inputs.branch }}" == "develop" ] && [ -z "${{ inputs.nocobase_pr_number }}" ] && [ -z "${{ inputs.pro_pr_number }}" ]; then
               if [ -f ./build-all.sh ]; then
-              ./build-all.sh
+                ./build-all.sh
+              fi
+            else
+              yarn build
+              yarn build --lang=cn
             fi
             rm -rf node_modules dist
           fi
