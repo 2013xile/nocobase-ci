@@ -70,7 +70,9 @@ jobs:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase,pro-plugins,${{ inputs.repository }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins), ',') }}
+          # needs.get-plugins.outputs.all-plugins is expected to be a JSON array string.
+          # Guard against empty/undefined output to avoid fromJSON() template errors.
+          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',') }}
           skip-token-revoke: true
       - name: Update in_progress status
         if: ${{ inputs.checkRunId }}
