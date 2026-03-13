@@ -10,16 +10,16 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'base branch'
+        description: "base branch"
         required: true
       nocobase_pr_number:
-        description: 'main repo pr number'
+        description: "main repo pr number"
       repository:
-        description: 'repo name'
+        description: "repo name"
       repo_pr_number:
-        description: 'repo pr number'
+        description: "repo pr number"
       checkRunId:
-        description: 'check run id'
+        description: "check run id"
 
 jobs:
   build-and-push:
@@ -30,6 +30,11 @@ jobs:
         ports:
           - 4873:4873
     steps:
+      - name: Fix Verdaccio max_body_size
+        run: |
+          CONTAINER_ID=$(docker ps -q -f ancestor=verdaccio/verdaccio:5)
+          docker exec -u root $CONTAINER_ID sh -c "echo 'max_body_size: 500mb' >> /verdaccio/conf/config.yaml"
+          docker restart $CONTAINER_ID
       - name: Get info
         id: get-info
         shell: bash
@@ -49,7 +54,7 @@ jobs:
           gh api -X PATCH /repos/nocobase/${{ inputs.repository }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=in_progress' \
              -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
-        env: 
+        env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Checkout
         uses: actions/checkout@v3
@@ -148,5 +153,5 @@ jobs:
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
              -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
-        env: 
+        env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
