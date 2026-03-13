@@ -10,18 +10,18 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'base branch'
+        description: "base branch"
         required: true
       nocobase_pr_number:
-        description: 'main repo pr number'
+        description: "main repo pr number"
       pro_plugin:
-        description: 'pro-plugins or plugin name (without plugin-)'
+        description: "pro-plugins or plugin name (without plugin-)"
       pro_pr_number:
-        description: 'pro repo pr number'
+        description: "pro repo pr number"
       repository:
-        description: 'repo name'
+        description: "repo name"
       checkRunId:
-        description: 'check run id'
+        description: "check run id"
 
 jobs:
   get-plugins:
@@ -29,7 +29,7 @@ jobs:
     with:
       # For v1 builds, only include repos that have the v1 branch.
       require_branch: ${{ inputs.branch == 'v1' && 'v1' || '' }}
-    secrets: 
+    secrets:
       NOCOBASE_APP_PRIVATE_KEY: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
   build-and-push:
     runs-on: ubuntu-latest
@@ -42,6 +42,11 @@ jobs:
         ports:
           - 4873:4873
     steps:
+      - name: Fix Verdaccio max_body_size
+        run: |
+          CONTAINER_ID=$(docker ps -q -f ancestor=verdaccio/verdaccio:5)
+          docker exec -u root $CONTAINER_ID sh -c "echo 'max_body_size: 500mb' >> /verdaccio/conf/config.yaml"
+          docker restart $CONTAINER_ID
       - name: Get info
         id: get-info
         shell: bash
@@ -80,7 +85,7 @@ jobs:
           gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
              -F 'status=in_progress' \
              -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
-        env: 
+        env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Checkout
         uses: actions/checkout@v3
@@ -100,7 +105,7 @@ jobs:
         id: get-branch
         shell: bash
         run: |
-            echo "baseBranch=${{ env.BASE_REF }}" >> $GITHUB_OUTPUT
+          echo "baseBranch=${{ env.BASE_REF }}" >> $GITHUB_OUTPUT
       - name: Checkout pro-plugins
         uses: actions/checkout@v3
         with:
@@ -289,5 +294,5 @@ jobs:
              -F 'status=completed' \
              -F 'conclusion=${{ job.status }}' \
              -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
-        env: 
+        env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

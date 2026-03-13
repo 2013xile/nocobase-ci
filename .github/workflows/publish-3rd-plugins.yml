@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'base branch'
+        description: "base branch"
         required: true
       repository:
-        description: 'repo name'
+        description: "repo name"
         required: true
 
 jobs:
@@ -25,6 +25,11 @@ jobs:
         ports:
           - 4873:4873
     steps:
+      - name: Fix Verdaccio max_body_size
+        run: |
+          CONTAINER_ID=$(docker ps -q -f ancestor=verdaccio/verdaccio:5)
+          docker exec -u root $CONTAINER_ID sh -c "echo 'max_body_size: 500mb' >> /verdaccio/conf/config.yaml"
+          docker restart $CONTAINER_ID
       - name: Get info
         id: get-info
         run: |
