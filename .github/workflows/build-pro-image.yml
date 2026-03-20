@@ -213,7 +213,7 @@ jobs:
           trimmed_variable=$(echo "$subdirectories" | xargs)
           packageNames="@nocobase/${trimmed_variable// / @nocobase/}"
           pluginNames="${trimmed_variable//plugin-/}"
-          BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production"
+          BEFORE_PACK_NOCOBASE="pnpm add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -w"
           APPEND_PRESET_LOCAL_PLUGINS="notifications,disable-pm-add,${pluginNames// /,}"
           echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
           echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
@@ -234,7 +234,7 @@ jobs:
 
           cd docs
 
-          yarn install
+          pnpm install
 
           branch="${{ inputs.branch }}"
           nocobase_pr="${{ inputs.nocobase_pr_number }}"
@@ -255,8 +255,8 @@ jobs:
             ./build-all.sh
           else
             echo "Running normal build"
-            yarn build
-            yarn build --lang=cn
+            pnpm build
+            pnpm build --lang=cn
             tar -czf dist.tar.gz -C ./dist .
           fi
 
