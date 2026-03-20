@@ -224,6 +224,10 @@ jobs:
           echo "CDN_ALI_OSS_ACCESS_KEY_SECRET=${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}" >> .env
           echo "CDN_ALI_OSS_BUCKET=${{ secrets.CDN_ALI_OSS_BUCKET }}" >> .env
           echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - name: build docs
         run: |
           set -e
