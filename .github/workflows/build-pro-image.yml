@@ -147,7 +147,6 @@ jobs:
           fi
       - name: Try checkout pro repos branch
         shell: bash
-        if: ${{ inputs.pro_pr_number == '' }}
         continue-on-error: true
         run: |
           for plugins in ./packages/pro-plugins/@nocobase/*; do
