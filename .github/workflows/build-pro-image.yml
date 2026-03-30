@@ -231,11 +231,12 @@ jobs:
           if [ ! -d docs ]; then
             exit 0
           fi
-
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock
           yarn install
 
           cd docs
 
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock
           yarn install
 
           branch="${{ inputs.branch }}"
