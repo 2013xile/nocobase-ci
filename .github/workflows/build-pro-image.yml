@@ -231,8 +231,15 @@ jobs:
           if [ ! -d docs ]; then
             exit 0
           fi
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock
-          yarn install
+
+          dockerfile_first_line="$(head -n 1 Dockerfile 2>/dev/null || true)"
+          if [ "$dockerfile_first_line" = "# v2" ]; then
+            echo "Detected v2 Dockerfile, installing root dependencies"
+            sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock
+            yarn install
+          else
+            echo "Dockerfile is not marked as v2, skipping root dependency install"
+          fi
 
           cd docs
 
