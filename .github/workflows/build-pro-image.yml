@@ -226,6 +226,7 @@ jobs:
       - name: build docs
         run: |
           set -e
+          yarn config set registry https://registry.npmjs.org/
 
           if [ ! -d docs ]; then
             exit 0
