@@ -231,6 +231,8 @@ jobs:
             exit 0
           fi
 
+          yarn install
+
           cd docs
 
           yarn install
