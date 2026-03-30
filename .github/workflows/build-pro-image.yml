@@ -262,6 +262,8 @@ jobs:
           fi
 
           rm -rf node_modules dist
+          cd ..
+          rm -rf node_modules
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
