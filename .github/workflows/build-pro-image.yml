@@ -318,7 +318,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq expect
           expect <<EOD
-          spawn npm adduser --registry http://localhost:4873/
+          spawn npm adduser --auth-type=legacy --registry http://localhost:4873/
           expect {
             "Username:" {send "test\r"; exp_continue}
             "Password:" {send "test\r"; exp_continue}
