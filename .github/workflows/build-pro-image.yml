@@ -353,10 +353,10 @@ jobs:
           echo "CDN_ALI_OSS_BUCKET=${{ secrets.CDN_ALI_OSS_BUCKET }}" >> .env
           echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
 
-      - name: Build and release packages
+      - name: Build, release, upload client assets, and export app artifact
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           yarn config set registry https://registry.npmjs.org/
           sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
           yarn install
@@ -376,21 +376,36 @@ jobs:
           git commit -m "chore(versions): test publish packages"
 
           yarn nocobase client:extract
-          yarn nocobase client:upload
+
+          yarn nocobase client:upload > client-upload.log 2>&1 &
+          upload_pid=$!
+
+          cleanup() {
+            if kill -0 "$upload_pid" 2>/dev/null; then
+              kill "$upload_pid" 2>/dev/null || true
+            fi
+          }
+
+          trap cleanup EXIT
+
           yarn release:force --registry http://localhost:4873/
 
-      - name: Build app artifact image
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          file: Dockerfile
-          target: app-artifact
-          build-args: |
-            VERDACCIO_URL=http://localhost:4873/
-            PLUGINS_DIRS=pro-plugins
-            BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
-            APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
-          outputs: type=local,dest=./app-artifact
+          docker buildx build \
+            --file Dockerfile \
+            --target app-artifact \
+            --build-arg VERDACCIO_URL=http://localhost:4873/ \
+            --build-arg PLUGINS_DIRS=pro-plugins \
+            --build-arg BEFORE_PACK_NOCOBASE="${{ steps.vars.outputs.var1 }}" \
+            --build-arg APPEND_PRESET_LOCAL_PLUGINS="${{ steps.vars.outputs.var2 }}" \
+            --output type=local,dest=./app-artifact \
+            .
+
+          wait "$upload_pid" || {
+            cat client-upload.log
+            exit 1
+          }
+
+          trap - EXIT
 
       - name: Upload app dist
         uses: actions/upload-artifact@v4
