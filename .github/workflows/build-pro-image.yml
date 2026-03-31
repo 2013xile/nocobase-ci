@@ -378,8 +378,10 @@ jobs:
 
           yarn nocobase client:extract
 
+          echo "Starting client asset upload in background..."
           yarn nocobase client:upload > client-upload.log 2>&1 &
           upload_pid=$!
+          echo "Client asset upload started with PID ${upload_pid}"
 
           cleanup() {
             if kill -0 "$upload_pid" 2>/dev/null; then
@@ -401,10 +403,13 @@ jobs:
             --output type=local,dest=./app-artifact \
             .
 
+          echo "App artifact export finished, waiting for client asset upload..."
           wait "$upload_pid" || {
+            echo "Client asset upload failed. Dumping log:"
             cat client-upload.log
             exit 1
           }
+          echo "Client asset upload finished."
 
           trap - EXIT
 
