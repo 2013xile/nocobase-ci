@@ -122,15 +122,16 @@ jobs:
         shell: bash
         run: |
           set -e
-          yarn config set registry https://registry.npmjs.org/
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
-          yarn install
 
           if [ ! -d docs ]; then
             mkdir -p .tmp-empty-docs
             tar -czf dist.tar.gz -C .tmp-empty-docs .
             exit 0
           fi
+
+          yarn config set registry https://registry.npmjs.org/
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
+          yarn install
 
           cd docs
           sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
