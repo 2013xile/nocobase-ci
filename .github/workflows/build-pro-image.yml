@@ -384,30 +384,19 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          target: app-builder
+          target: app-artifact
           build-args: |
             VERDACCIO_URL=http://localhost:4873/
             PLUGINS_DIRS=pro-plugins
             BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
             APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
-          load: true
-          tags: nocobase-app-artifact:${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Export app artifact
-        shell: bash
-        run: |
-          set -e
-          image_tag="nocobase-app-artifact:${{ github.run_id }}-${{ github.run_attempt }}"
-          container_id="$(docker create "$image_tag")"
-          docker cp "$container_id":/nocobase.tar.gz ./nocobase.tar.gz
-          docker rm -f "$container_id"
-          docker image rm "$image_tag" || true
+          outputs: type=local,dest=./app-artifact
 
       - name: Upload app dist
         uses: actions/upload-artifact@v4
         with:
           name: app-dist
-          path: nocobase.tar.gz
+          path: app-artifact/nocobase.tar.gz
           retention-days: 1
 
   assemble-image:
