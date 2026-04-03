@@ -375,6 +375,15 @@ jobs:
           git add .
           git commit -m "chore(versions): test publish packages"
 
+          mkdir -p package-artifacts
+          if [ -d "packages/core/nocobase-cli" ]; then
+            yarn build @nocobase/nocobase-cli
+            (
+              cd packages/core/nocobase-cli
+              npm pack --pack-destination ../../../package-artifacts
+            )
+          fi
+
           yarn nocobase client:extract
 
           echo "Starting client asset upload in background..."
@@ -417,6 +426,15 @@ jobs:
         with:
           name: app-dist
           path: app-artifact/nocobase.tar.gz
+          retention-days: 1
+
+      - name: Upload nocobase-cli package
+        if: ${{ hashFiles('packages/core/nocobase-cli/package.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nocobase-cli-package
+          path: package-artifacts/*.tgz
+          if-no-files-found: error
           retention-days: 1
 
   assemble-image:
