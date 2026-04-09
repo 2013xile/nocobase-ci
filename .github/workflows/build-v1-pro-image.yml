@@ -1,0 +1,299 @@
+name: Build v1 pro image
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
+  cancel-in-progress: true
+
+run-name: ${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.repository }}-${{ inputs.pro_pr_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "base branch"
+        required: true
+      nocobase_pr_number:
+        description: "main repo pr number"
+      pro_plugin:
+        description: "pro-plugins or plugin name (without plugin-)"
+      pro_pr_number:
+        description: "pro repo pr number"
+      repository:
+        description: "repo name"
+      checkRunId:
+        description: "check run id"
+
+jobs:
+  get-plugins:
+    if: ${{ inputs.branch == 'v1' }}
+    uses: nocobase/nocobase/.github/workflows/get-plugins.yml@main
+    with:
+      # For v1 builds, only include repos that have the v1 branch.
+      require_branch: ${{ inputs.branch == 'v1' && 'v1' || '' }}
+    secrets:
+      NOCOBASE_APP_PRIVATE_KEY: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+  build-and-push:
+    if: ${{ inputs.branch == 'v1' }}
+    runs-on: ubuntu-latest
+    needs: get-plugins
+    env:
+      BASE_REF: ${{ inputs.branch }}
+    services:
+      verdaccio:
+        image: verdaccio/verdaccio:5
+        ports:
+          - 4873:4873
+    steps:
+      - name: Fix Verdaccio max_body_size
+        run: |
+          CONTAINER_ID=$(docker ps -q -f ancestor=verdaccio/verdaccio:5)
+          docker exec -u root $CONTAINER_ID sh -c "echo 'max_body_size: 500mb' >> /verdaccio/conf/config.yaml"
+          docker restart $CONTAINER_ID
+      - name: Get info
+        id: get-info
+        shell: bash
+        run: |
+          if [[ "${{ inputs.branch }}" == "next" ]]; then
+            echo "proRepos=$(echo '${{ needs.get-plugins.outputs.beta-plugins }}')" >> $GITHUB_OUTPUT
+          elif [[ "${{ inputs.branch }}" == "develop" ]]; then
+            echo "proRepos=$(echo '${{ needs.get-plugins.outputs.alpha-plugins }}')" >> $GITHUB_OUTPUT
+          else
+            echo "proRepos=$(echo '${{ needs.get-plugins.outputs.rc-plugins }}')" >> $GITHUB_OUTPUT
+          fi
+          if [ -n "${{ inputs.pro_pr_number }}" ]; then
+            if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
+              echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-pro')" >> $GITHUB_OUTPUT
+            else 
+              echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
+            fi
+          elif [ -n "${{ inputs.nocobase_pr_number }}" ]; then
+            echo "imageTag=$(echo 'pr-${{ inputs.nocobase_pr_number }}')" >> $GITHUB_OUTPUT
+          else
+            echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
+          fi
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          # needs.get-plugins.outputs.all-plugins is expected to be a JSON array string.
+          # Guard against empty/undefined output to avoid fromJSON() template errors.
+          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',') }}
+          skip-token-revoke: true
+      - name: Update in_progress status
+        if: ${{ inputs.checkRunId }}
+        run: |
+          gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
+             -F 'status=in_progress' \
+             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          repository: nocobase/nocobase
+          ref: ${{ inputs.branch }}
+          token: ${{ steps.app-token.outputs.token }}
+          submodules: true
+      - name: Checkout nocobase/nocobase pr
+        if: ${{ inputs.nocobase_pr_number != '' }}
+        shell: bash
+        run: |
+          gh pr checkout ${{ inputs.nocobase_pr_number }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Get branch
+        id: get-branch
+        shell: bash
+        run: |
+          echo "baseBranch=$(git branch --show-current)" >> $GITHUB_OUTPUT
+      - name: Checkout pro-plugins
+        uses: actions/checkout@v3
+        with:
+          repository: nocobase/pro-plugins
+          ref: ${{ env.BASE_REF }}
+          path: packages/pro-plugins
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Try checkout pro-plugins branch
+        if: ${{ inputs.repository != 'pro-plugins' || inputs.pro_pr_number == '' }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          cd ./packages/pro-plugins/
+          git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+          cd ../../
+      - name: Checkout pro-plugins pr
+        if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
+        shell: bash
+        run: |
+          cd ./packages/pro-plugins/
+          gh pr checkout ${{ inputs.pro_pr_number }}
+          cd ../../
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: Clone pro repos
+        shell: bash
+        run: |
+          for repo in ${{ join(fromJSON(steps.get-info.outputs.proRepos), ' ') }}
+          do
+          git clone -b ${{ env.BASE_REF }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/$repo.git packages/pro-plugins/@nocobase/$repo
+          done
+      - name: Clone pro repo
+        shell: bash
+        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' }}
+        run: |
+          if [ ! -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}" ]; then
+            git clone -b ${{ env.BASE_REF }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ inputs.repository }}.git packages/pro-plugins/@nocobase/${{ inputs.repository }}
+          fi
+      - name: Try checkout pro repos branch
+        shell: bash
+        continue-on-error: true
+        run: |
+          for plugins in ./packages/pro-plugins/@nocobase/*; do
+            echo "$plugins"
+            cd "$plugins"
+            git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+            cd ../../../../
+          done
+      - name: Checkout pro pr
+        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
+        shell: bash
+        run: |
+          cd ./packages/pro-plugins/@nocobase/${{ inputs.repository }}
+          gh pr checkout ${{ inputs.pro_pr_number }}
+          cd ../../../../
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      - name: rm .git
+        run: |
+          rm -rf packages/pro-plugins/.git
+          for repo in ${{ join(fromJSON(steps.get-info.outputs.proRepos), ' ') }}
+          do
+            rm -rf packages/pro-plugins/@nocobase/$repo/.git
+          done
+          if [ -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}/.git" ]; then
+            rm -rf packages/pro-plugins/@nocobase/${{ inputs.repository }}/.git
+          fi
+          git config --global user.email "you@example.com"
+          git config --global user.name "Your Name" && git add -A && git commit -m "tmp commit"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          driver-opts: network=host
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+      - name: Clean up Docker space
+        run: |
+          echo "Before cleanup:"
+          df -h
+          docker system df
+          docker system prune -af
+          docker volume prune -f
+          echo "After cleanup:"
+          df -h
+      - name: free disk space
+        run: |
+          sudo rm -rf /opt/hostedtoolcache
+          df -h
+      - name: Set tags
+        id: set-tags
+        run: |
+          echo "::set-output name=tags::${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}"
+      - name: Set variables
+        run: |
+          target_directory="./packages/pro-plugins/@nocobase"
+          subdirectories=$(find "$target_directory" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | tr '\n' ' ')
+          trimmed_variable=$(echo "$subdirectories" | xargs)
+          packageNames="@nocobase/${trimmed_variable// / @nocobase/}"
+          pluginNames="${trimmed_variable//plugin-/}"
+          BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production"
+          APPEND_PRESET_LOCAL_PLUGINS="notifications,disable-pm-add,${pluginNames// /,}"
+          echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
+          echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
+        id: vars
+      - name: Append to .env
+        run: |
+          echo "CDN_ALI_OSS_ACCESS_KEY_ID=${{ secrets.CDN_ALI_OSS_ACCESS_KEY_ID }}" >> .env
+          echo "CDN_ALI_OSS_ACCESS_KEY_SECRET=${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}" >> .env
+          echo "CDN_ALI_OSS_BUCKET=${{ secrets.CDN_ALI_OSS_BUCKET }}" >> .env
+          echo "CDN_ALI_OSS_REGION=${{ secrets.CDN_ALI_OSS_REGION }}" >> .env
+      - name: build docs
+        run: |
+          set -e
+
+          if [ ! -d docs ]; then
+            exit 0
+          fi
+
+          cd docs
+
+          yarn install
+
+          branch="${{ inputs.branch }}"
+          nocobase_pr="${{ inputs.nocobase_pr_number }}"
+          pro_pr="${{ inputs.pro_pr_number }}"
+
+          should_build_all=false
+
+          case "$branch" in
+            main|next|develop)
+              if [ -z "$nocobase_pr" ] && [ -z "$pro_pr" ]; then
+                should_build_all=true
+              fi
+              ;;
+          esac
+
+          if [ "$should_build_all" = true ] && [ -f ./build-all.sh ]; then
+            echo "Running build-all.sh"
+            ./build-all.sh
+          else
+            echo "Running normal build"
+            yarn build
+            yarn build --lang=cn
+            tar -czf dist.tar.gz -C ./dist .
+          fi
+
+          rm -rf node_modules dist
+      - name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          file: Dockerfile
+          build-args: |
+            VERDACCIO_URL=http://localhost:4873/
+            COMMIT_HASH=${GITHUB_SHA}
+            PLUGINS_DIRS=pro-plugins
+            BEFORE_PACK_NOCOBASE=${{ steps.vars.outputs.var1 }}
+            APPEND_PRESET_LOCAL_PLUGINS=${{ steps.vars.outputs.var2 }}
+          push: true
+          tags: ${{ steps.set-tags.outputs.tags }}
+      - name: Deploy NocoBase V2
+        env:
+          IMAGE_TAG: nocobase/nocobase:${{ steps.get-info.outputs.imageTag }}
+        run: |
+          echo $IMAGE_TAG
+          export APP_NAME=$(echo $IMAGE_TAG | cut -d ":" -f 2)
+          echo $APP_NAME
+          curl --retry 2 --location --request POST "${{secrets.NOCOBASE_DEPLOY_HOST_V2}}$APP_NAME" \
+            --header 'Content-Type: application/json' \
+            -d "{
+                \"tag\": \"$APP_NAME\",
+                \"dialect\": \"postgres\"
+            }"
+      - name: Update success status
+        if: ${{ inputs.checkRunId && always() }}
+        run: |
+          gh api -X PATCH /repos/nocobase/${{ inputs.repository || 'nocobase' }}/check-runs/${{ inputs.checkRunId }} \
+             -F 'status=completed' \
+             -F 'conclusion=${{ job.status }}' \
+             -F 'details_url=https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
