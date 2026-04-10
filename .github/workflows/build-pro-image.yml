@@ -24,6 +24,18 @@ on:
         description: "check run id"
 
 jobs:
+  dispatch-v1:
+    if: ${{ inputs.branch == 'v1' }}
+    uses: ./.github/workflows/build-v1-pro-image.yml
+    with:
+      branch: ${{ inputs.branch }}
+      nocobase_pr_number: ${{ inputs.nocobase_pr_number || '' }}
+      pro_plugin: ${{ inputs.pro_plugin || '' }}
+      pro_pr_number: ${{ inputs.pro_pr_number || '' }}
+      repository: ${{ inputs.repository || '' }}
+      checkRunId: ${{ inputs.checkRunId || '' }}
+    secrets: inherit
+
   get-plugins:
     if: ${{ inputs.branch != 'v1' }}
     uses: nocobase/nocobase/.github/workflows/get-plugins.yml@main

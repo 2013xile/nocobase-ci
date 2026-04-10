@@ -22,6 +22,21 @@ on:
         description: "repo name"
       checkRunId:
         description: "check run id"
+  workflow_call:
+    inputs:
+      branch:
+        type: string
+        required: true
+      nocobase_pr_number:
+        type: string
+      pro_plugin:
+        type: string
+      pro_pr_number:
+        type: string
+      repository:
+        type: string
+      checkRunId:
+        type: string
 
 jobs:
   get-plugins:
