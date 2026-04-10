@@ -1,9 +1,5 @@
 name: Build v1 pro image
 
-concurrency:
-  group: ${{ github.workflow }}-${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.pro_plugin }}-${{ inputs.pro_pr_number }}
-  cancel-in-progress: true
-
 run-name: ${{ inputs.branch }}-${{ inputs.nocobase_pr_number }}-${{ inputs.repository }}-${{ inputs.pro_pr_number }}
 
 on:
