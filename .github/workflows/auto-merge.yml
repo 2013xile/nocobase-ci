@@ -68,6 +68,25 @@ jobs:
           git checkout ${{ steps.get-branch.outputs.targetBranch }}
           git merge ${{ steps.get-branch.outputs.baseBranch }}
           git push origin ${{ steps.get-branch.outputs.targetBranch }}
+      - name: Checkout nocobase for notify script
+        if: failure()
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/nocobase
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/feishu-notify.sh
+          path: nocobase-scripts
+      - name: Send Feishu notification on failure
+        if: failure()
+        shell: bash
+        env:
+          WEBHOOK_URL: ${{ secrets.RELEASE_RESULT_FEISHU_WEBHOOK_URL }}
+          TITLE: "Auto Merge 失败通知"
+          STATUS: "failure"
+          STATUS_TEXT_FAILURE: "合并失败"
+          CONTENT: "**仓库：**${{ inputs.repository || 'nocobase' }}\n**分支：**${{ steps.get-branch.outputs.baseBranch }} → ${{ steps.get-branch.outputs.targetBranch }}\n**状态：**❌ 合并失败"
+          WORKFLOW_URL: https://github.com/2013xile/nocobase-ci/actions/runs/${{ github.run_id }}
+        run: bash nocobase-scripts/scripts/feishu-notify.sh
       - name: Update success status
         if: always()
         run: |
