@@ -341,6 +341,24 @@ jobs:
           }
           EOD
 
+      - name: Free disk space before app artifact build
+        shell: bash
+        run: |
+          echo "Before cleanup:"
+          df -h
+          docker system df || true
+
+          docker system prune -af || true
+          docker builder prune -af || true
+
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/share/swift
+
+          echo "After cleanup:"
+          df -h
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
         with:
@@ -406,6 +424,13 @@ jobs:
           trap cleanup EXIT
 
           yarn release:force --registry http://localhost:4873/
+
+          echo "Cleaning workspace before docker buildx build..."
+          yarn cache clean || true
+          find . -name node_modules -type d -prune -exec rm -rf '{}' +
+          docker system prune -af || true
+          docker builder prune -af || true
+          df -h
 
           docker buildx build \
             --file Dockerfile \
