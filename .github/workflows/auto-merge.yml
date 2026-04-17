@@ -81,7 +81,7 @@ jobs:
         shell: bash
         env:
           WEBHOOK_URL: ${{ secrets.RELEASE_RESULT_FEISHU_WEBHOOK_URL }}
-          TITLE: "Auto Merge 失败通知"
+          TITLE: "NocoBase - Auto Merge 失败通知"
           STATUS: "failure"
           STATUS_TEXT_FAILURE: "合并失败"
           CONTENT: "**仓库：**${{ inputs.repository || 'nocobase' }}\n**分支：**${{ steps.get-branch.outputs.baseBranch }} → ${{ steps.get-branch.outputs.targetBranch }}\n**状态：**❌ 合并失败"
