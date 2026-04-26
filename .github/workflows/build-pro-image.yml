@@ -197,7 +197,7 @@ jobs:
   build-app:
     if: ${{ inputs.branch != 'v1' }}
     runs-on: ubuntu-latest
-    needs: [get-plugins, prepare-meta]
+    needs: [ get-plugins, prepare-meta ]
     env:
       BASE_REF: ${{ inputs.branch }}
       PLUGINS_DIRS: pro-plugins
@@ -300,7 +300,8 @@ jobs:
           done
 
       - name: Checkout pro pr
-        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
+        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' &&
+          inputs.pro_pr_number != '' }}
         shell: bash
         run: |
           cd ./packages/pro-plugins/@nocobase/${{ inputs.repository }}
@@ -461,7 +462,7 @@ jobs:
 
   assemble-image:
     runs-on: ubuntu-latest
-    needs: [prepare-meta, build-docs, build-app]
+    needs: [ prepare-meta, build-docs, build-app ]
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -509,7 +510,8 @@ jobs:
           build-args: |
             COMMIT_HASH=${GITHUB_SHA}
           push: true
-          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.imageTag }}
+          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{
+            needs.prepare-meta.outputs.imageTag }}
 
       - name: Deploy NocoBase V2
         env:
@@ -526,7 +528,7 @@ jobs:
   update-status:
     if: ${{ inputs.checkRunId && always() }}
     runs-on: ubuntu-latest
-    needs: [get-plugins, prepare-meta, build-docs, build-app, assemble-image]
+    needs: [ get-plugins, prepare-meta, build-docs, build-app, assemble-image ]
     env:
       GET_PLUGINS_RESULT: ${{ needs.get-plugins.result }}
       PREPARE_META_RESULT: ${{ needs.prepare-meta.result }}
@@ -542,7 +544,9 @@ jobs:
           owner: nocobase
           # needs.get-plugins.outputs.all-plugins is expected to be a JSON array string.
           # Guard against empty/undefined output to avoid fromJSON() template errors.
-          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',') }}
+          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{
+            join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',')
+            }}
           skip-token-revoke: true
 
       - name: Update final status
