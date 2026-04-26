@@ -510,8 +510,7 @@ jobs:
           build-args: |
             COMMIT_HASH=${GITHUB_SHA}
           push: true
-          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{
-            needs.prepare-meta.outputs.imageTag }}
+          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.imageTag }}
 
       - name: Deploy NocoBase V2
         env:
@@ -544,9 +543,7 @@ jobs:
           owner: nocobase
           # needs.get-plugins.outputs.all-plugins is expected to be a JSON array string.
           # Guard against empty/undefined output to avoid fromJSON() template errors.
-          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{
-            join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',')
-            }}
+          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{ join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',') }}
           skip-token-revoke: true
 
       - name: Update final status
