@@ -300,8 +300,7 @@ jobs:
           done
 
       - name: Checkout pro pr
-        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' &&
-          inputs.pro_pr_number != '' }}
+        if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
         shell: bash
         run: |
           cd ./packages/pro-plugins/@nocobase/${{ inputs.repository }}
