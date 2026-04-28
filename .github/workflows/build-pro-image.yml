@@ -187,7 +187,7 @@ jobs:
 
           # Upload docs to OSS and update CDN (only for develop branch, non-PR builds, with docs changes)
           if [ "${{ inputs.branch }}" = "develop" ] && [ -z "${{ inputs.nocobase_pr_number }}" ]; then
-            DOCS_CHANGED=$(git diff HEAD~1 --name-only -- docs/ 2>/dev/null | head -1)
+            DOCS_CHANGED=$(git log -1 --name-only --pretty=format: -- docs/ 2>/dev/null | head -1; true)
             if [ -z "$DOCS_CHANGED" ]; then
               echo "No changes in docs/, skipping CDN upload"
             else
