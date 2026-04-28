@@ -203,6 +203,11 @@ jobs:
             BUCKET=$DOCS_ALI_OSS_BUCKET
             ossutil cp -r docs/dist/ oss://$BUCKET/$TIMESTAMP/ -f -j 64 --region $REGION
 
+            # Upload 404.html to bucket root for OSS static hosting
+            if [ -f docs/dist/404.html ]; then
+              ossutil cp docs/dist/404.html oss://$BUCKET/404.html -f --region $REGION
+            fi
+
             # Update CDN rewrite rule, refresh cache, cleanup old versions
             yarn nocobase docs:update --timestamp $TIMESTAMP
             fi
