@@ -133,6 +133,15 @@ jobs:
 
       - name: Build docs
         shell: bash
+        env:
+          DOCS_ALI_OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
+          DOCS_ALI_OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
+          DOCS_ALI_OSS_BUCKET: ${{ secrets.DOCS_ALI_OSS_BUCKET }}
+          DOCS_ALI_OSS_REGION: ${{ secrets.DOCS_ALI_OSS_REGION }}
+          DOCS_ALI_CDN_DOMAIN: ${{ secrets.DOCS_ALI_CDN_DOMAIN }}
+          DOCS_ALI_CDN_REGION: ${{ secrets.DOCS_ALI_CDN_REGION }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
         run: |
           set -e
 
@@ -174,9 +183,32 @@ jobs:
             tar -czf ../dist.tar.gz -C ./dist .
           fi
 
-          rm -rf node_modules dist
           cd ..
-          rm -rf node_modules
+
+          # Upload docs to OSS and update CDN (only for develop branch, non-PR builds, with docs changes)
+          if [ "${{ inputs.branch }}" = "develop" ] && [ -z "${{ inputs.nocobase_pr_number }}" ]; then
+            DOCS_CHANGED=$(git diff HEAD~1 --name-only -- docs/ 2>/dev/null | head -1)
+            if [ -z "$DOCS_CHANGED" ]; then
+              echo "No changes in docs/, skipping CDN upload"
+            else
+            # Install ossutil
+            curl -s -o /tmp/ossutil.zip https://gosspublic.alicdn.com/ossutil/v2/2.2.2/ossutil-2.2.2-linux-amd64.zip
+            unzip -o -q /tmp/ossutil.zip -d /tmp/ossutil
+            sudo mv /tmp/ossutil/ossutil-2.2.2-linux-amd64/ossutil /usr/local/bin/ossutil
+            sudo chmod 755 /usr/local/bin/ossutil
+
+            # Upload via ossutil
+            TIMESTAMP=$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)
+            REGION=$DOCS_ALI_CDN_REGION
+            BUCKET=$DOCS_ALI_OSS_BUCKET
+            ossutil cp -r docs/dist/ oss://$BUCKET/$TIMESTAMP/ -f -j 64 --region $REGION
+
+            # Update CDN rewrite rule, refresh cache, cleanup old versions
+            yarn nocobase docs:update --timestamp $TIMESTAMP
+            fi
+          fi
+
+          rm -rf docs/node_modules docs/dist node_modules
 
       - name: Upload docs dist
         uses: actions/upload-artifact@v4
