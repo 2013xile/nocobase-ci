@@ -175,13 +175,15 @@ jobs:
           if [ "$should_build_all" = true ] && [ -f ./build-all.sh ]; then
             echo "Running build-all.sh"
             ./build-all.sh
-            mv dist.tar.gz ../dist.tar.gz
           else
             echo "Running normal build"
             yarn build
             yarn build --lang=cn
-            tar -czf ../dist.tar.gz -C ./dist .
           fi
+
+          echo "Normalizing docs HTML output"
+          node ./scripts/normalize-html-output.mjs --out-dir ./dist
+          tar -czf ../dist.tar.gz -C ./dist .
 
           cd ..
 
