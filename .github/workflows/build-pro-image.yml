@@ -241,6 +241,113 @@ jobs:
             docker/
           retention-days: 1
 
+  check-docs:
+    if: ${{ inputs.branch != 'v1' }}
+    runs-on: ubuntu-latest
+    needs: prepare-meta
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase
+          skip-token-revoke: true
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          repository: nocobase/nocobase
+          ref: ${{ inputs.branch }}
+          token: ${{ steps.app-token.outputs.token }}
+          submodules: true
+
+      - name: Checkout nocobase/nocobase pr
+        if: ${{ inputs.nocobase_pr_number != '' }}
+        shell: bash
+        run: |
+          gh pr checkout ${{ inputs.nocobase_pr_number }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Probe docs scripts
+        id: probe
+        shell: bash
+        run: |
+          if [ ! -d docs ] || [ ! -d docs/scripts ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Skipping: docs/ or docs/scripts/ not found on this branch"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install js-yaml (for check-home-alignment)
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping js-yaml install"
+            exit 0
+          fi
+          cd docs
+          npm install --no-save --no-package-lock --no-audit --no-fund js-yaml >/dev/null
+
+      - name: Tree alignment
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-tree-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-tree-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-tree-alignment.mjs
+
+      - name: Meta alignment
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-meta-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-meta-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-meta-alignment.mjs
+
+      - name: Nav alignment
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-nav-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-nav-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-nav-alignment.mjs
+
+      - name: Home alignment
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-home-alignment.mjs
+
+      - name: Bloated files
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [ ! -f docs/scripts/check-bloated-files.mjs ]; then
+            echo "::notice::docs/scripts/check-bloated-files.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-bloated-files.mjs
+
   build-app:
     if: ${{ inputs.branch != 'v1' }}
     runs-on: ubuntu-latest
@@ -577,13 +684,14 @@ jobs:
   update-status:
     if: ${{ inputs.checkRunId && always() }}
     runs-on: ubuntu-latest
-    needs: [ get-plugins, prepare-meta, build-docs, build-app, assemble-image ]
+    needs: [ get-plugins, prepare-meta, build-docs, build-app, assemble-image, check-docs ]
     env:
       GET_PLUGINS_RESULT: ${{ needs.get-plugins.result }}
       PREPARE_META_RESULT: ${{ needs.prepare-meta.result }}
       BUILD_DOCS_RESULT: ${{ needs.build-docs.result }}
       BUILD_APP_RESULT: ${{ needs.build-app.result }}
       ASSEMBLE_IMAGE_RESULT: ${{ needs.assemble-image.result }}
+      CHECK_DOCS_RESULT: ${{ needs.check-docs.result }}
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -611,7 +719,8 @@ jobs:
             "$PREPARE_META_RESULT" \
             "$BUILD_DOCS_RESULT" \
             "$BUILD_APP_RESULT" \
-            "$ASSEMBLE_IMAGE_RESULT"
+            "$ASSEMBLE_IMAGE_RESULT" \
+            "$CHECK_DOCS_RESULT"
           do
             if [ "$result" != "skipped" ]; then
               all_skipped="false"
