@@ -348,6 +348,40 @@ jobs:
           fi
           node docs/scripts/check-bloated-files.mjs
 
+      - name: i18n coverage (PR cn changes synced to other languages)
+        if: steps.probe.outputs.skip != 'true' && inputs.nocobase_pr_number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ ! -f docs/scripts/check-i18n-coverage.mjs ]; then
+            echo "::notice::docs/scripts/check-i18n-coverage.mjs not found, skipping"
+            exit 0
+          fi
+
+          PR_NUM="${{ inputs.nocobase_pr_number }}"
+          REPO="nocobase/${{ inputs.repository || 'nocobase' }}"
+
+          # Opt-out: PR labeled `skip-i18n-check` bypasses this step entirely.
+          # The label exists in nocobase/nocobase; for other repos there's nothing to check.
+          if [ "$REPO" = "nocobase/nocobase" ]; then
+            if gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx 'skip-i18n-check'; then
+              echo "::notice::PR $PR_NUM has skip-i18n-check label, bypassing i18n coverage check"
+              exit 0
+            fi
+          fi
+
+          # Pull the PR's changed-file list directly from GitHub. Avoid `git diff origin/<base>...HEAD`
+          # because actions/checkout is shallow and the base ref isn't fetched.
+          gh pr view "$PR_NUM" --repo "$REPO" --json files --jq '.files[].path' > /tmp/changed-files.txt
+
+          if [ ! -s /tmp/changed-files.txt ]; then
+            echo "No changed files reported for PR $PR_NUM; skipping"
+            exit 0
+          fi
+
+          cat /tmp/changed-files.txt | node docs/scripts/check-i18n-coverage.mjs
+
   build-app:
     if: ${{ inputs.branch != 'v1' }}
     runs-on: ubuntu-latest
