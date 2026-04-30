@@ -290,73 +290,77 @@ jobs:
       - name: Install js-yaml (for check-home-alignment)
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+          if [ ! -f scripts/check-home-alignment.mjs ]; then
             echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping js-yaml install"
             exit 0
           fi
-          # Install at repo root, not docs/, because the alignment step runs
-          # `node docs/scripts/check-home-alignment.mjs` from repo root.
-          # createRequire(cwd/__pkg__) resolves js-yaml from cwd's node_modules.
           npm install --no-save --no-package-lock --no-audit --no-fund js-yaml >/dev/null
 
       - name: Tree alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-tree-alignment.mjs ]; then
+          if [ ! -f scripts/check-tree-alignment.mjs ]; then
             echo "::notice::docs/scripts/check-tree-alignment.mjs not found, skipping"
             exit 0
           fi
-          node docs/scripts/check-tree-alignment.mjs
+          node scripts/check-tree-alignment.mjs ./docs
 
       - name: Meta alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-meta-alignment.mjs ]; then
+          if [ ! -f scripts/check-meta-alignment.mjs ]; then
             echo "::notice::docs/scripts/check-meta-alignment.mjs not found, skipping"
             exit 0
           fi
-          node docs/scripts/check-meta-alignment.mjs
+          node scripts/check-meta-alignment.mjs ./docs
 
       - name: Nav alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-nav-alignment.mjs ]; then
+          if [ ! -f scripts/check-nav-alignment.mjs ]; then
             echo "::notice::docs/scripts/check-nav-alignment.mjs not found, skipping"
             exit 0
           fi
-          node docs/scripts/check-nav-alignment.mjs
+          node scripts/check-nav-alignment.mjs ./docs
 
       - name: Home alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+          if [ ! -f scripts/check-home-alignment.mjs ]; then
             echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping"
             exit 0
           fi
-          node docs/scripts/check-home-alignment.mjs
+          node scripts/check-home-alignment.mjs ./docs
 
       - name: Bloated files
         if: steps.probe.outputs.skip != 'true'
         shell: bash
+        working-directory: docs
         run: |
-          if [ ! -f docs/scripts/check-bloated-files.mjs ]; then
+          if [ ! -f scripts/check-bloated-files.mjs ]; then
             echo "::notice::docs/scripts/check-bloated-files.mjs not found, skipping"
             exit 0
           fi
-          node docs/scripts/check-bloated-files.mjs
+          node scripts/check-bloated-files.mjs ./docs
 
       - name: i18n coverage (PR cn changes synced to other languages)
         if: steps.probe.outputs.skip != 'true' && inputs.nocobase_pr_number != ''
         shell: bash
+        working-directory: docs
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          if [ ! -f docs/scripts/check-i18n-coverage.mjs ]; then
+          if [ ! -f scripts/check-i18n-coverage.mjs ]; then
             echo "::notice::docs/scripts/check-i18n-coverage.mjs not found, skipping"
             exit 0
           fi
@@ -382,7 +386,7 @@ jobs:
             exit 0
           fi
 
-          cat /tmp/changed-files.txt | node docs/scripts/check-i18n-coverage.mjs
+          cat /tmp/changed-files.txt | node scripts/check-i18n-coverage.mjs
 
   build-app:
     if: ${{ inputs.branch != 'v1' }}
