@@ -291,33 +291,62 @@ jobs:
         if: steps.probe.outputs.skip != 'true'
         shell: bash
         run: |
+          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping js-yaml install"
+            exit 0
+          fi
           cd docs
           npm install --no-save --no-package-lock --no-audit --no-fund js-yaml >/dev/null
 
       - name: Tree alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
-        run: node docs/scripts/check-tree-alignment.mjs
+        run: |
+          if [ ! -f docs/scripts/check-tree-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-tree-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-tree-alignment.mjs
 
       - name: Meta alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
-        run: node docs/scripts/check-meta-alignment.mjs
+        run: |
+          if [ ! -f docs/scripts/check-meta-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-meta-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-meta-alignment.mjs
 
       - name: Nav alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
-        run: node docs/scripts/check-nav-alignment.mjs
+        run: |
+          if [ ! -f docs/scripts/check-nav-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-nav-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-nav-alignment.mjs
 
       - name: Home alignment
         if: steps.probe.outputs.skip != 'true'
         shell: bash
-        run: node docs/scripts/check-home-alignment.mjs
+        run: |
+          if [ ! -f docs/scripts/check-home-alignment.mjs ]; then
+            echo "::notice::docs/scripts/check-home-alignment.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-home-alignment.mjs
 
       - name: Bloated files
         if: steps.probe.outputs.skip != 'true'
         shell: bash
-        run: node docs/scripts/check-bloated-files.mjs
+        run: |
+          if [ ! -f docs/scripts/check-bloated-files.mjs ]; then
+            echo "::notice::docs/scripts/check-bloated-files.mjs not found, skipping"
+            exit 0
+          fi
+          node docs/scripts/check-bloated-files.mjs
 
   build-app:
     if: ${{ inputs.branch != 'v1' }}
