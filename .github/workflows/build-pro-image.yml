@@ -392,6 +392,8 @@ jobs:
     if: ${{ inputs.branch != 'v1' }}
     runs-on: ubuntu-latest
     needs: [ get-plugins, prepare-meta ]
+    outputs:
+      installNbCli: ${{ steps.vars.outputs.installNbCli }}
     env:
       BASE_REF: ${{ inputs.branch }}
       PLUGINS_DIRS: pro-plugins
@@ -572,8 +574,14 @@ jobs:
           pluginNames="${trimmed_variable//plugin-/}"
           BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production"
           APPEND_PRESET_LOCAL_PLUGINS="notifications,disable-pm-add,${pluginNames// /,}"
+          if [ -f "./packages/core/cli-v1/package.json" ]; then
+            INSTALL_NB_CLI=1
+          else
+            INSTALL_NB_CLI=0
+          fi
           echo "var1=$BEFORE_PACK_NOCOBASE" >> $GITHUB_OUTPUT
           echo "var2=$APPEND_PRESET_LOCAL_PLUGINS" >> $GITHUB_OUTPUT
+          echo "installNbCli=$INSTALL_NB_CLI" >> $GITHUB_OUTPUT
 
       - name: Append to .env
         shell: bash
@@ -636,6 +644,7 @@ jobs:
             --build-arg PLUGINS_DIRS=pro-plugins \
             --build-arg BEFORE_PACK_NOCOBASE="${{ steps.vars.outputs.var1 }}" \
             --build-arg APPEND_PRESET_LOCAL_PLUGINS="${{ steps.vars.outputs.var2 }}" \
+            --build-arg INSTALL_NB_CLI="${{ steps.vars.outputs.installNbCli }}" \
             --output type=local,dest=./app-artifact \
             .
 
@@ -653,7 +662,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-dist
-          path: app-artifact/nocobase.tar.gz
+          path: |
+            app-artifact/nocobase.tar.gz
+            app-artifact/nb.tar.gz
           retention-days: 1
 
   assemble-image:
@@ -705,6 +716,7 @@ jobs:
           target: runtime
           build-args: |
             COMMIT_HASH=${GITHUB_SHA}
+            INSTALL_NB_CLI=${{ needs.build-app.outputs.installNbCli }}
           push: true
           tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{
             needs.prepare-meta.outputs.imageTag }}
