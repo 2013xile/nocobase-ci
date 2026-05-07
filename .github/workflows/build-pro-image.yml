@@ -377,13 +377,26 @@ jobs:
             fi
           fi
 
-          # Pull the PR's changed-file list directly from GitHub. Avoid `git diff origin/<base>...HEAD`
-          # because actions/checkout is shallow and the base ref isn't fetched.
-          gh pr view "$PR_NUM" --repo "$REPO" --json files --jq '.files[].path' > /tmp/changed-files.txt
+          # Pull the PR's changed-file list via the REST files endpoint with --paginate.
+          # `gh pr view --json files` returns only the first 100 files (alphabetic) and is
+          # silently lossy for any PR larger than that, producing bogus STALE results.
+          # `git diff origin/<base>...HEAD` won't work either: actions/checkout is shallow
+          # and doesn't fetch the base ref.
+          # The REST endpoint paginates up to GitHub's server-side hard cap of 3000 files;
+          # we warn (not fail) when a PR exceeds the cap so the user can decide whether to
+          # `skip-i18n-check` or split the PR.
+          gh api "repos/$REPO/pulls/$PR_NUM/files?per_page=100" --paginate \
+            --jq '.[].filename' > /tmp/changed-files.txt
 
           if [ ! -s /tmp/changed-files.txt ]; then
             echo "No changed files reported for PR $PR_NUM; skipping"
             exit 0
+          fi
+
+          TOTAL_FILES=$(gh pr view "$PR_NUM" --repo "$REPO" --json changedFiles --jq '.changedFiles')
+          GOT_FILES=$(wc -l < /tmp/changed-files.txt | tr -d ' ')
+          if [ "$TOTAL_FILES" -gt "$GOT_FILES" ]; then
+            echo "::warning::PR has $TOTAL_FILES changed files but GitHub returned only $GOT_FILES (3000-file API cap). i18n coverage check will be partial; add 'skip-i18n-check' label to bypass."
           fi
 
           cat /tmp/changed-files.txt | node scripts/check-i18n-coverage.mjs
