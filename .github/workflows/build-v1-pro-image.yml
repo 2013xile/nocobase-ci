@@ -163,10 +163,12 @@ jobs:
         continue-on-error: true
         run: |
           for plugins in ./packages/pro-plugins/@nocobase/*; do
+            if [ ! -e "$plugins/.git" ]; then
+              echo "Skip non-git plugin path: $plugins"
+              continue
+            fi
             echo "$plugins"
-            cd "$plugins"
-            git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
-            cd ../../../../
+            git -C "$plugins" checkout ${{ steps.get-branch.outputs.baseBranch }} || true
           done
       - name: Checkout pro pr
         if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' && inputs.pro_pr_number != '' }}
