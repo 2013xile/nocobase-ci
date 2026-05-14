@@ -587,7 +587,7 @@ jobs:
           trimmed_variable=$(echo "$subdirectories" | xargs)
           packageNames="@nocobase/${trimmed_variable// / @nocobase/}"
           pluginNames="${trimmed_variable//plugin-/}"
-          BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production"
+          BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production --ignore-peer-dependencies"
           APPEND_PRESET_LOCAL_PLUGINS="notifications,disable-pm-add,${pluginNames// /,}"
           if [ -f "./packages/core/cli-v1/package.json" ]; then
             INSTALL_NB_CLI=1
