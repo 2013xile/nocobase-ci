@@ -1,0 +1,146 @@
+name: 'Setup pro workspace'
+description: 'Mint a GitHub App token, then checkout nocobase + pro-plugins + standalone pro plugin repos with PR checkouts applied. Used by build-app and check-and-build-with-types.'
+
+inputs:
+  branch:
+    description: 'Base branch (e.g. main, develop, next)'
+    required: true
+  nocobase_pr_number:
+    description: 'PR number in the nocobase repo to checkout, if any'
+    required: false
+    default: ''
+  pro_pr_number:
+    description: 'PR number in the pro plugin repo to checkout, if any'
+    required: false
+    default: ''
+  pro_plugin:
+    description: 'Pro plugin name (either ''pro-plugins'' or a single plugin-* name)'
+    required: false
+    default: ''
+  repository:
+    description: 'Pro plugin repository name (defaults to nocobase)'
+    required: false
+    default: 'nocobase'
+  pro_repos:
+    description: 'JSON array of pro repo names to clone (typically prepare-meta.outputs.proRepos)'
+    required: false
+    default: '[]'
+  all_plugins:
+    description: 'JSON array of all-plugins from get-plugins (used to scope the GitHub App token)'
+    required: false
+    default: '[]'
+  app_id:
+    description: 'GitHub App ID for minting the installation token'
+    required: true
+  app_private_key:
+    description: 'GitHub App private key for minting the installation token'
+    required: true
+
+outputs:
+  app_token:
+    description: 'The GitHub App installation token (use for subsequent gh/git operations)'
+    value: ${{ steps.app-token.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/create-github-app-token@v2
+      id: app-token
+      with:
+        app-id: ${{ inputs.app_id }}
+        private-key: ${{ inputs.app_private_key }}
+        owner: nocobase
+        repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{
+          join(fromJSON(inputs.all_plugins || '[]'), ',')
+          }}
+        skip-token-revoke: true
+
+    - name: Checkout
+      uses: actions/checkout@v5
+      with:
+        repository: nocobase/nocobase
+        ref: ${{ inputs.branch }}
+        token: ${{ steps.app-token.outputs.token }}
+        submodules: true
+
+    - name: Checkout nocobase/nocobase pr
+      if: ${{ inputs.nocobase_pr_number != '' }}
+      shell: bash
+      run: |
+        gh pr checkout ${{ inputs.nocobase_pr_number }}
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+    - name: Get branch
+      id: get-branch
+      shell: bash
+      run: |
+        echo "baseBranch=$(git branch --show-current)" >> $GITHUB_OUTPUT
+
+    - name: Checkout pro-plugins
+      uses: actions/checkout@v5
+      with:
+        repository: nocobase/pro-plugins
+        ref: ${{ inputs.branch }}
+        path: packages/pro-plugins
+        fetch-depth: 0
+        token: ${{ steps.app-token.outputs.token }}
+
+    - name: Try checkout pro-plugins branch
+      if: ${{ inputs.repository != 'pro-plugins' || inputs.pro_pr_number == '' }}
+      shell: bash
+      continue-on-error: true
+      run: |
+        cd ./packages/pro-plugins/
+        git checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+        cd ../../
+
+    - name: Checkout pro-plugins pr
+      if: ${{ inputs.repository == 'pro-plugins' && inputs.pro_pr_number != '' }}
+      shell: bash
+      run: |
+        cd ./packages/pro-plugins/
+        gh pr checkout ${{ inputs.pro_pr_number }}
+        cd ../../
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
+    - name: Clone pro repos
+      shell: bash
+      run: |
+        for repo in ${{ join(fromJSON(inputs.pro_repos || '[]'), ' ') }}
+        do
+          git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/$repo.git packages/pro-plugins/@nocobase/$repo
+        done
+
+    - name: Clone pro repo
+      shell: bash
+      if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' }}
+      run: |
+        if [ ! -d "packages/pro-plugins/@nocobase/${{ inputs.repository }}" ]; then
+          git clone -b ${{ inputs.branch }} https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/nocobase/${{ inputs.repository }}.git packages/pro-plugins/@nocobase/${{ inputs.repository }}
+        fi
+
+    - name: Try checkout pro repos branch
+      shell: bash
+      continue-on-error: true
+      run: |
+        for plugins in ./packages/pro-plugins/@nocobase/*; do
+          if [ ! -e "$plugins/.git" ]; then
+            echo "Skip non-git plugin path: $plugins"
+            continue
+          fi
+          echo "$plugins"
+          git -C "$plugins" checkout ${{ steps.get-branch.outputs.baseBranch }} || true
+        done
+
+    - name: Checkout pro pr
+      if: ${{ inputs.pro_plugin && inputs.pro_plugin != 'pro-plugins' &&
+        inputs.pro_pr_number != '' }}
+      shell: bash
+      run: |
+        cd ./packages/pro-plugins/@nocobase/${{ inputs.repository }}
+        gh pr checkout ${{ inputs.pro_pr_number }}
+        cd ../../../../
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
