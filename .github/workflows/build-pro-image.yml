@@ -407,7 +407,7 @@ jobs:
     needs: [ get-plugins, prepare-meta ]
     steps:
       - name: Setup pro workspace
-        uses: ./.github/actions/setup-pro-workspace
+        uses: ./.github/actions/setup-nocobase-workspace
         with:
           branch: ${{ inputs.branch }}
           nocobase_pr_number: ${{ inputs.nocobase_pr_number || '' }}
@@ -486,7 +486,7 @@ jobs:
           docker restart $CONTAINER_ID
 
       - name: Setup pro workspace
-        uses: ./.github/actions/setup-pro-workspace
+        uses: ./.github/actions/setup-nocobase-workspace
         with:
           branch: ${{ inputs.branch }}
           nocobase_pr_number: ${{ inputs.nocobase_pr_number || '' }}

@@ -1,4 +1,4 @@
-name: 'Setup pro workspace'
+name: 'Setup nocobase workspace'
 description: 'Mint a GitHub App token, then checkout nocobase + pro-plugins + standalone pro plugin repos with PR checkouts applied. Used by build-app and check-and-build-with-types.'
 
 inputs:
