@@ -135,6 +135,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.29.1 --activate
+
       - name: Build docs
         shell: bash
         env:
@@ -155,13 +161,12 @@ jobs:
             exit 0
           fi
 
-          yarn config set registry https://registry.npmjs.org/
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
-          yarn install
+          pnpm config set registry https://registry.npmjs.org/
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' pnpm-lock.yaml || true
+          pnpm install --frozen-lockfile
 
           cd docs
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
-          yarn install
+          pnpm install --no-frozen-lockfile
 
           branch="${{ inputs.branch }}"
           nocobase_pr="${{ inputs.nocobase_pr_number }}"
@@ -181,8 +186,8 @@ jobs:
             ./build-all.sh
           else
             echo "Running normal build"
-            yarn build
-            yarn build --lang=cn
+            pnpm build
+            pnpm build --lang=cn
           fi
 
           if [ -f ./scripts/normalize-html-output.mjs ]; then
@@ -219,7 +224,7 @@ jobs:
             fi
 
             # Update CDN rewrite rule, refresh cache, cleanup old versions
-            yarn nocobase docs:update --timestamp $TIMESTAMP
+            pnpm nocobase docs:update --timestamp $TIMESTAMP
             fi
           fi
 
@@ -516,6 +521,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.29.1 --activate
+
       - name: Probe peer-deps scripts
         id: probe
         shell: bash
@@ -552,10 +563,10 @@ jobs:
       - name: Install and build (with type definitions)
         shell: bash
         run: |
-          yarn config set registry https://registry.npmjs.org/
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
-          yarn install
-          yarn build
+          pnpm config set registry https://registry.npmjs.org/
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' pnpm-lock.yaml || true
+          pnpm install --frozen-lockfile
+          pnpm build
 
   build-app:
     if: ${{ inputs.branch != 'v1' }}
@@ -715,6 +726,12 @@ jobs:
         with:
           node-version: 22
 
+      - name: Setup pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.29.1 --activate
+
       - name: Login to Verdaccio
         shell: bash
         run: |
@@ -743,7 +760,7 @@ jobs:
           trimmed_variable=$(echo "$subdirectories" | xargs)
           packageNames="@nocobase/${trimmed_variable// / @nocobase/}"
           pluginNames="${trimmed_variable//plugin-/}"
-          BEFORE_PACK_NOCOBASE="yarn add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -W --production --ignore-peer-dependencies"
+          BEFORE_PACK_NOCOBASE="pnpm add @nocobase/plugin-notifications @nocobase/plugin-disable-pm-add $packageNames -w --prod --config.strict-peer-dependencies=false"
           APPEND_PRESET_LOCAL_PLUGINS="notifications,disable-pm-add,${pluginNames// /,}"
           if [ -f "./packages/core/cli-v1/package.json" ]; then
             INSTALL_NB_CLI=1
@@ -766,10 +783,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yarn config set registry https://registry.npmjs.org/
-          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' yarn.lock || true
-          yarn install
-          yarn build --no-dts
+          pnpm config set registry https://registry.npmjs.org/
+          sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' pnpm-lock.yaml || true
+          pnpm install --frozen-lockfile
+          pnpm build --no-dts
 
           CURRENTVERSION="$(jq -r '.version' lerna.json)"
           IFS='.-' read -r major minor patch label <<< "$CURRENTVERSION"
@@ -778,16 +795,16 @@ jobs:
           NEWVERSION="$(echo $CURRENTVERSION).${TIMESTAMP}"
 
           git checkout -b "release-${TIMESTAMP}"
-          yarn lerna version "${NEWVERSION}" -y --no-git-tag-version
+          pnpm lerna version "${NEWVERSION}" -y --no-git-tag-version
           git config user.email "test@mail.com"
           git config user.name "test"
           git add .
           git commit -m "chore(versions): test publish packages"
 
-          yarn nocobase client:extract
+          pnpm nocobase client:extract
 
           echo "Starting client asset upload in background..."
-          yarn nocobase client:upload > client-upload.log 2>&1 &
+          pnpm nocobase client:upload > client-upload.log 2>&1 &
           upload_pid=$!
           echo "Client asset upload started with PID ${upload_pid}"
 
@@ -799,10 +816,10 @@ jobs:
 
           trap cleanup EXIT
 
-          yarn release:force --registry http://localhost:4873/
+          pnpm release:force --registry http://localhost:4873/
 
           echo "Cleaning workspace before docker buildx build..."
-          yarn cache clean || true
+          pnpm store prune || true
           find . -name node_modules -type d -prune -exec rm -rf '{}' +
           docker system prune -af || true
           docker builder prune -af || true
