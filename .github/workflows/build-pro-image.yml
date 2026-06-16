@@ -565,7 +565,7 @@ jobs:
         run: |
           pnpm config set registry https://registry.npmjs.org/
           sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' pnpm-lock.yaml || true
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           pnpm build
 
   build-app:
@@ -785,7 +785,7 @@ jobs:
           set -euo pipefail
           pnpm config set registry https://registry.npmjs.org/
           sed -i 's/registry.npmmirror.com/registry.npmjs.org/g' pnpm-lock.yaml || true
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           pnpm build --no-dts
 
           CURRENTVERSION="$(jq -r '.version' lerna.json)"
