@@ -797,8 +797,62 @@ jobs:
           TIMESTAMP="$(date +'%Y%m%d%H%M%S')"
           NEWVERSION="$(echo $CURRENTVERSION).${TIMESTAMP}"
 
+          export NEWVERSION
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const newVersion = process.env.NEWVERSION;
+          if (!newVersion) {
+            throw new Error('NEWVERSION is required');
+          }
+
+          const writeJson = (file, data) => {
+            fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+          };
+
+          const lernaJson = JSON.parse(fs.readFileSync('lerna.json', 'utf8'));
+          lernaJson.version = newVersion;
+          writeJson('lerna.json', lernaJson);
+
+          const packageFiles = [];
+          const walk = (dir) => {
+            if (!fs.existsSync(dir)) {
+              return;
+            }
+
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (entry.name === 'node_modules' || entry.name === '.git') {
+                continue;
+              }
+
+              const fullPath = path.join(dir, entry.name);
+              if (entry.isDirectory()) {
+                walk(fullPath);
+              } else if (entry.name === 'package.json') {
+                packageFiles.push(fullPath);
+              }
+            }
+          };
+
+          walk('packages');
+
+          let updated = 0;
+          for (const file of packageFiles) {
+            const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (!pkg.name || !pkg.version) {
+              continue;
+            }
+
+            pkg.version = newVersion;
+            writeJson(file, pkg);
+            updated += 1;
+          }
+
+          console.log(`Updated ${updated} workspace package versions to ${newVersion}`);
+          NODE
+
           git checkout -b "release-${TIMESTAMP}"
-          pnpm lerna version "${NEWVERSION}" -y --no-git-tag-version
           git config user.email "test@mail.com"
           git config user.name "test"
           git add .
@@ -819,7 +873,7 @@ jobs:
 
           trap cleanup EXIT
 
-          pnpm release:force --registry http://localhost:4873/
+          pnpm -r publish --registry http://localhost:4873/ --no-git-checks --access public
 
           echo "Cleaning workspace before docker buildx build..."
           pnpm store prune || true
