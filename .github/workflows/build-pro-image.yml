@@ -52,6 +52,7 @@ jobs:
     needs: get-plugins
     outputs:
       imageTag: ${{ steps.get-info.outputs.imageTag }}
+      uniqueImageTag: ${{ steps.get-info.outputs.uniqueImageTag }}
       proRepos: ${{ steps.get-info.outputs.proRepos }}
     steps:
       - name: Get info
@@ -68,15 +69,18 @@ jobs:
 
           if [ -n "${{ inputs.pro_pr_number }}" ]; then
             if [[ "${{ inputs.pro_plugin }}" == "pro-plugins" ]]; then
-              echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-pro')" >> $GITHUB_OUTPUT
+              image_tag="pr-${{ inputs.pro_pr_number }}-pro"
             else
-              echo "imageTag=$(echo 'pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}')" >> $GITHUB_OUTPUT
+              image_tag="pr-${{ inputs.pro_pr_number }}-${{ inputs.pro_plugin }}"
             fi
           elif [ -n "${{ inputs.nocobase_pr_number }}" ]; then
-            echo "imageTag=$(echo 'pr-${{ inputs.nocobase_pr_number }}')" >> $GITHUB_OUTPUT
+            image_tag="pr-${{ inputs.nocobase_pr_number }}"
           else
-            echo "imageTag=$(echo '${{ inputs.branch }}')" >> $GITHUB_OUTPUT
+            image_tag="${{ inputs.branch }}"
           fi
+
+          echo "imageTag=${image_tag}" >> $GITHUB_OUTPUT
+          echo "uniqueImageTag=${image_tag}-${{ github.run_id }}" >> $GITHUB_OUTPUT
 
       - uses: actions/create-github-app-token@v2
         id: app-token
@@ -889,8 +893,9 @@ jobs:
             COMMIT_HASH=${GITHUB_SHA}
             INSTALL_NB_CLI=${{ needs.build-app.outputs.installNbCli }}
           push: true
-          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{
-            needs.prepare-meta.outputs.imageTag }}
+          tags: |
+            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.imageTag }}
+            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.uniqueImageTag }}
 
       - name: Deploy NocoBase V2
         env:
