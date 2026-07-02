@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SUPPORTED_E2E_REFS = new Set(['main', 'next', 'develop']);
+const IGNORED_DOC_OR_CONFIG_RULE = 'ignored-doc-or-config';
+const IGNORED_DOC_OR_CONFIG_SCOPE = 'docs/**、.github/**、*.md、README.md、.node-version 等文档或配置文件变更不触发 E2E。';
 
 function usage() {
   console.error(`Usage:
@@ -181,6 +183,34 @@ function createResolution() {
   };
 }
 
+function skippedDetail(skippedReason, changedFileCount, ignoredCount) {
+  if (skippedReason !== 'no-e2e-targets') {
+    return {
+      reasonText: skippedReason || '',
+      ruleScope: '',
+    };
+  }
+
+  if (changedFileCount === 0) {
+    return {
+      reasonText: 'changed files 为空，没有需要触发的 E2E target。',
+      ruleScope: '',
+    };
+  }
+
+  if (ignoredCount === changedFileCount) {
+    return {
+      reasonText: `所有 changed files 都命中 ${IGNORED_DOC_OR_CONFIG_RULE} 规则。`,
+      ruleScope: IGNORED_DOC_OR_CONFIG_SCOPE,
+    };
+  }
+
+  return {
+    reasonText: '解析成功，但没有匹配到需要触发 E2E 的 target。',
+    ruleScope: '',
+  };
+}
+
 function addTarget(result, source, file, target, rule) {
   result.targets.add(target);
   result.matched.push({
@@ -314,6 +344,7 @@ try {
       ? ''
       : 'no-e2e-targets';
   const changedFileCount = sourcesWithFiles.reduce((count, source) => count + source.files.length, 0);
+  const skip = skippedDetail(skippedReason, changedFileCount, resolution.ignored.length);
   const summary = {
     branch,
     e2eRef: branch,
@@ -324,6 +355,8 @@ try {
     targetInput,
     targets,
     changedFileCount,
+    skipReasonText: skip.reasonText,
+    skipRuleScope: skip.ruleScope,
     sources: sourcesWithFiles.map((source) => ({
       sourceRepo: source.sourceRepo,
       sourceFullName: source.sourceFullName,
@@ -343,6 +376,8 @@ try {
     mode,
     should_run: String(shouldRun),
     skipped_reason: skippedReason,
+    skip_reason_text: skip.reasonText,
+    skip_rule_scope: skip.ruleScope,
     target_input: targetInput,
     e2e_ref: branch,
     e2e_ref_supported: String(e2eRefSupported),
