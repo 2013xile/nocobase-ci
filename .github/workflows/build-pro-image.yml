@@ -909,6 +909,165 @@ jobs:
                 \"dialect\": \"postgres\"
             }"
 
+  dispatch-e2e:
+    if: ${{ always() && contains(fromJSON('["main","next","develop"]'), inputs.branch) && needs.assemble-image.result == 'success' }}
+    runs-on: ubuntu-latest
+    needs: [ get-plugins, prepare-meta, assemble-image ]
+    continue-on-error: true
+    steps:
+      - name: Checkout nocobase-ci
+        uses: actions/checkout@v5
+
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase,pro-plugins,${{ inputs.repository || 'nocobase' }},${{
+            join(fromJSON(needs.get-plugins.outputs.all-plugins || '[]'), ',')
+            }}
+          skip-token-revoke: true
+
+      - name: Resolve E2E targets
+        id: resolve-e2e
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISPATCH_ID: build-pro-${{ github.run_id }}-${{ github.run_attempt }}
+          CALLER_REPO: ${{ github.repository }}
+          CALLER_RUN_ID: ${{ github.run_id }}
+          CALLER_SHA: ${{ github.sha }}
+          IMAGE_TAG: ${{ needs.prepare-meta.outputs.imageTag }}
+          E2E_REF: ${{ inputs.branch }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          log_file="$RUNNER_TEMP/e2e-resolve.log"
+          output_file="$RUNNER_TEMP/e2e-targets.json"
+          payload_file="$RUNNER_TEMP/e2e-dispatch-payload.json"
+
+          if node scripts/resolve-e2e-targets.mjs \
+            --branch "${{ inputs.branch }}" \
+            --repository "${{ inputs.repository || 'nocobase' }}" \
+            --nocobase-pr-number "${{ inputs.nocobase_pr_number || '' }}" \
+            --pro-plugin "${{ inputs.pro_plugin || '' }}" \
+            --pro-pr-number "${{ inputs.pro_pr_number || '' }}" \
+            --github-token "$GH_TOKEN" \
+            --output "$output_file" \
+            --github-output "$GITHUB_OUTPUT" > "$log_file" 2>&1
+          then
+            cat "$log_file"
+
+            node scripts/write-e2e-dispatch-payload.mjs \
+              --summary "$output_file" \
+              --payload-output "$payload_file" \
+              --github-output "$GITHUB_OUTPUT"
+
+            {
+              echo "## E2E worker dispatch"
+              echo
+              echo "- image tag: $IMAGE_TAG"
+              echo "- e2e ref: $E2E_REF"
+              echo "- event type: $(node -e "console.log(require(process.argv[1]).event_type)" "$payload_file")"
+              echo "- target input: $(node -e "console.log(require(process.argv[1]).target_input || require(process.argv[1]).resolver?.target_input || '<none>')" "$payload_file")"
+              echo "- changed files: $(node -e "console.log(require(process.argv[1]).resolver?.changed_file_count ?? '<unknown>')" "$payload_file")"
+              echo
+              echo '```json'
+              cat "$output_file"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$log_file"
+            echo "::warning::E2E target resolver failed; dispatching worker notification."
+
+            node scripts/write-e2e-dispatch-payload.mjs \
+              --resolver-error-log "$log_file" \
+              --payload-output "$payload_file" \
+              --github-output "$GITHUB_OUTPUT"
+
+            {
+              echo "## E2E worker dispatch"
+              echo
+              echo "- image tag: $IMAGE_TAG"
+              echo "- e2e ref: $E2E_REF"
+              echo "- event type: resolver_failed"
+              echo
+              echo '```text'
+              cat "$log_file"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Dispatch E2E worker
+        if: ${{ always() && steps.resolve-e2e.outputs.dispatch_payload != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.E2E_WORKER_TOKEN }}
+          TARGETS: ${{ steps.resolve-e2e.outputs.target_input || '__notification__' }}
+          E2E_REF: ${{ steps.resolve-e2e.outputs.e2e_ref || inputs.branch }}
+          DISPATCH_PAYLOAD: ${{ steps.resolve-e2e.outputs.dispatch_payload }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::E2E_WORKER_TOKEN is not configured; skip E2E worker dispatch."
+            exit 0
+          fi
+
+          if gh workflow run e2e.yml \
+            --repo Charls-Wu/nocobase-e2e-ci \
+            --ref main \
+            -f targets="$TARGETS" \
+            -f nocobase_version="${{ needs.prepare-meta.outputs.imageTag }}" \
+            -f e2e_repo=nocobase/e2e \
+            -f e2e_ref="$E2E_REF" \
+            -f dry_run=false \
+            -f dispatch_id="build-pro-${{ github.run_id }}-${{ github.run_attempt }}" \
+            -f caller_repo="${{ github.repository }}" \
+            -f caller_run_id="${{ github.run_id }}" \
+            -f caller_sha="${{ github.sha }}" \
+            -f dispatch_payload="$DISPATCH_PAYLOAD"
+          then
+            {
+              echo
+              echo "Dispatched E2E worker:"
+              echo "https://github.com/Charls-Wu/nocobase-e2e-ci/actions/workflows/e2e.yml"
+              echo
+              echo "Payload:"
+              echo '```json'
+              echo "$DISPATCH_PAYLOAD"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Failed to dispatch E2E worker; image build result is not affected."
+
+            {
+              echo
+              echo "Failed to dispatch E2E worker. Image build result is not affected."
+              echo "Check E2E_WORKER_TOKEN permissions and worker workflow availability."
+              echo
+              echo "Payload:"
+              echo '```json'
+              echo "$DISPATCH_PAYLOAD"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Write E2E dispatch skip summary
+        if: ${{ always() && steps.resolve-e2e.outputs.dispatch_payload == '' }}
+        shell: bash
+        run: |
+          {
+            echo "## E2E worker dispatch"
+            echo
+            echo "E2E worker was not dispatched."
+            echo
+            echo "- resolver outcome: ${{ steps.resolve-e2e.outcome }}"
+            echo "- reason: dispatch payload was not created"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   update-status:
     if: ${{ inputs.checkRunId && always() }}
     runs-on: ubuntu-latest
