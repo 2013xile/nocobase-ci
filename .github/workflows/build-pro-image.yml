@@ -142,6 +142,15 @@ jobs:
       - name: Build docs
         shell: bash
         env:
+          # 全量构建（build-all.sh）会并发构建 10 个语言，且各路是锁步的——同一秒进入 SSG 渲染这个最吃内存的阶段，
+          # 峰值几乎线性叠加。ubuntu-latest 只有 16 GB，4 路并发实测峰值 7.4 GB（采样下界，真实尖峰更高），
+          # 偶发越界会让整台 runner 被回收，日志表现为 "runner has received a shutdown signal" 而非构建报错。
+          # 降到 3 路可砍掉约 1.2 GB 峰值，全量构建约多 1 分钟。
+          MAX_JOBS: 3
+          # 给单个构建进程的老生代堆设硬上限。16 GB 机器上 V8 的默认值就是 4096 MB，写 4096 等于没设，
+          # 这里取 3072 才真正收紧：任何一路失控会先自己抛 JavaScript heap out of memory 退出，
+          # 留下明确报错，而不是把整台机器拖垮后静默消失。实测单语言构建在此上限下可正常完成。
+          NODE_OPTIONS: --max-old-space-size=3072
           DOCS_ALI_OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
           DOCS_ALI_OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
           DOCS_ALI_OSS_BUCKET: ${{ secrets.DOCS_ALI_OSS_BUCKET }}
