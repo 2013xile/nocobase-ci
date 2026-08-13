@@ -902,6 +902,7 @@ jobs:
             COMMIT_HASH=${GITHUB_SHA}
             INSTALL_NB_CLI=${{ needs.build-app.outputs.installNbCli }}
           push: true
+          provenance: false
           tags: |
             ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.imageTag }}
             ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase:${{ needs.prepare-meta.outputs.uniqueImageTag }}
