@@ -1,0 +1,422 @@
+name: NocoBase 3 Pro CI
+run-name: pro-ci:${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: UUID shared with the source-repository check runs.
+        required: true
+        type: string
+      event_name:
+        description: Source event type (pull_request or push).
+        required: true
+        type: string
+      head_sha:
+        description: Immutable 40-character source head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable 40-character base SHA, or forty zeroes for the first push.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch.
+        required: true
+        type: string
+      pr_number:
+        description: Positive pull request number, or 0 for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source pull request has the release:skip label (true or false).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nocobase3-pro-ci-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  submodule:
+    name: Submodule and catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Verify the submodule pointer tracks the target branch
+        working-directory: pro
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          TRACKED_BRANCH=develop
+          if [ "$TARGET_BRANCH" = 'main' ]; then
+            TRACKED_BRANCH=main
+          fi
+          node ./scripts/pin-submodule.mjs --check --branch "$TRACKED_BRANCH"
+
+      - name: Verify the catalog mirrors the submodule
+        working-directory: pro
+        run: node ./scripts/sync-workspace-config.mjs --check
+
+  changed-files:
+    name: Changed files
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: pro
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared development config
+        working-directory: pro
+        run: pnpm dev-config:build
+
+      - name: Check changed files
+        shell: bash
+        working-directory: pro
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$(git rev-list --max-parents=0 "$HEAD_SHA")"
+          fi
+
+          root_files=()
+          prettier_files=()
+
+          while IFS= read -r -d '' file; do
+            case "$file" in
+              packages/*|vendor/*) ;;
+              *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts) root_files+=("$file") ;;
+            esac
+
+            case "$file" in
+              vendor/*) ;;
+              *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts|*.json|*.json5|*.jsonc|*.md|*.mdx|*.yml|*.yaml|*.css|*.scss|*.less|*.html)
+                prettier_files+=("$file")
+                ;;
+            esac
+          done < <(git diff --name-only --diff-filter=ACMR -z "$BASE_SHA" "$HEAD_SHA")
+
+          if ((${#root_files[@]})); then
+            pnpm exec eslint --no-warn-ignored --max-warnings 0 -- "${root_files[@]}"
+          fi
+
+          pnpm --filter "[$BASE_SHA]" --if-present lint
+
+          if ((${#prettier_files[@]})); then
+            pnpm exec prettier --check --ignore-path .prettierignore -- "${prettier_files[@]}"
+          fi
+
+  validation:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Typecheck
+            script: typecheck
+            pack_check: false
+            peers_check: true
+          - name: Test
+            script: test
+            pack_check: false
+            peers_check: false
+          - name: Build
+            script: build
+            pack_check: true
+            peers_check: false
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: pro
+        run: pnpm install --frozen-lockfile
+
+      - name: Check peer dependencies
+        if: ${{ matrix.peers_check }}
+        working-directory: pro
+        run: pnpm peers:check
+
+      - name: Configure NocoBase dependency registry
+        if: ${{ matrix.script == 'build' }}
+        run: npm config set @nocobase:registry=https://npm.nocobase.ai
+
+      - name: ${{ matrix.name }}
+        working-directory: pro
+        run: pnpm ${{ matrix.script }}
+
+      - name: Check package tarballs
+        if: ${{ matrix.pack_check }}
+        working-directory: pro
+        env:
+          PACK_DIR: ${{ runner.temp }}/nocobase-pack-check
+        run: pnpm pack:check
+
+  create-app-smoke:
+    name: Pro plugins on OSS Default installation smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: pro
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure NocoBase dependency registry
+        run: npm config set @nocobase:registry=https://npm.nocobase.ai
+
+      - name: Verify Pro plugins with current OSS Default source
+        uses: ./.github/nocobase3/verify-create-app
+
+  quality:
+    name: quality
+    if: ${{ always() }}
+    needs:
+      - submodule
+      - changed-files
+      - validation
+      - create-app-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify parallel jobs
+        env:
+          SUBMODULE_RESULT: ${{ needs.submodule.result }}
+          CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
+          VALIDATION_RESULT: ${{ needs.validation.result }}
+          SMOKE_RESULT: ${{ needs.create-app-smoke.result }}
+        run: |
+          if [[ "$SUBMODULE_RESULT" != 'success' || "$CHANGED_FILES_RESULT" != 'success' || "$VALIDATION_RESULT" != 'success' || "$SMOKE_RESULT" != 'success' ]]; then
+            echo 'One or more quality jobs failed or were cancelled.'
+            exit 1
+          fi
+
+  changeset-check:
+    name: Validate and advise
+    if: ${{ inputs.event_name == 'pull_request' && (inputs.target_branch == 'main' || inputs.target_branch == 'develop') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed pull request head
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: pro
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate changeset files
+        working-directory: pro
+        run: node ./vendor/nocobase3/scripts/validate-changesets.mjs
+
+      - name: Require a changeset for every changed package
+        working-directory: pro
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: node ./vendor/nocobase3/scripts/require-changesets.mjs
+
+  guard-main:
+    name: Reject prerelease state
+    if: ${{ inputs.event_name == 'pull_request' && inputs.target_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check for prerelease state files
+        working-directory: pro
+        run: |
+          FOUND=''
+          [ -f .changeset/pre.json ] && FOUND="$FOUND .changeset/pre.json"
+          if [ -d .changeset/pre ] && [ -n "$(ls -A .changeset/pre 2>/dev/null)" ]; then
+            FOUND="$FOUND .changeset/pre/"
+          fi
+          if [ -n "$FOUND" ]; then
+            echo "::error::Prerelease state files are not allowed on main: $FOUND"
+            echo 'If this is a promotion merge, changeset version either did not run or the merge happened before it did.'
+            exit 1
+          fi
+          echo 'No prerelease state files found'
+
+      - name: Check the submodule tracks the stable line
+        working-directory: pro
+        run: node ./scripts/pin-submodule.mjs --check --branch main
+
+      - name: Check for prerelease versions
+        working-directory: pro
+        run: |
+          LEFT=$(node ./vendor/nocobase3/scripts/list-package-versions.mjs --prerelease)
+          if [ -n "$LEFT" ]; then
+            echo "::error::Prerelease versions are not allowed on main: $LEFT"
+            exit 1
+          fi
+          echo 'No prerelease versions found'

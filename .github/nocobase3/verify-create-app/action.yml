@@ -1,0 +1,191 @@
+name: Verify Pro create-app without artifacts
+description: Publish the fixed Pro and OSS source to a throwaway registry, generate OSS Default, and verify the application without uploading source or logs.
+
+inputs:
+  working-directory:
+    description: Directory containing the checked-out Pro repository.
+    default: pro
+  port:
+    description: Port the throwaway registry listens on.
+    default: '4873'
+  timeout:
+    description: Seconds to wait for each development and production server to become ready.
+    default: '420'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate the source package selection
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        node --input-type=module -e '
+          import { readPublishableWorkspacePackages } from "./scripts/smoke-registry-config.mjs";
+          const packages = readPublishableWorkspacePackages(process.cwd());
+          const names = new Set(packages.map((pkg) => pkg.name));
+          for (const required of ["@nocobase/create-app", "@nocobase/app-template-default", "@nocobase/app-plugin-mail", "@nocobase/app-plugin-ai-knowledge-base"]) {
+            if (!names.has(required)) throw new Error(`Missing required smoke package ${required}`);
+          }
+          for (const excluded of ["@nocobase/app-template-examples", "@nocobase/app-template-hub"]) {
+            if (names.has(excluded)) throw new Error(`Unexpected template package ${excluded}`);
+          }
+          console.log(`Testing pinned OSS source with Pro plugins; ${packages.length} local packages will be published.`);
+        '
+
+    - name: Build Pro and OSS source packages
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        pnpm --filter './packages/**' --filter './vendor/nocobase3/packages/**' \
+          --filter '!./packages/templates/**' --filter '!./vendor/nocobase3/packages/templates/**' \
+          --recursive --if-present build
+
+    - name: Start the throwaway registry
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PORT: ${{ inputs.port }}
+      run: |
+        set -euo pipefail
+        CONFIG="$RUNNER_TEMP/pro-smoke-verdaccio.yaml"
+        node scripts/smoke-registry-config.mjs > "$CONFIG"
+        docker run -d --name pro-release-verdaccio \
+          -p "127.0.0.1:$PORT:4873" \
+          -v "$CONFIG:/verdaccio/conf/config.yaml:ro" \
+          verdaccio/verdaccio:5
+
+        for _ in $(seq 1 60); do
+          if curl -fsS --max-time 5 "http://localhost:$PORT/-/ping" -o /dev/null 2>/dev/null; then
+            echo "Registry is up on port $PORT"
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo '::error::The throwaway registry did not start'
+        docker logs pro-release-verdaccio
+        exit 1
+
+    - name: Authenticate against the throwaway registry
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PORT: ${{ inputs.port }}
+      run: |
+        set -euo pipefail
+        TOKEN=$(curl -fsS -X PUT \
+          -H 'Content-Type: application/json' \
+          -u release-ci:release-ci \
+          -d '{"name":"release-ci","password":"release-ci","type":"user","roles":[]}' \
+          "http://localhost:$PORT/-/user/org.couchdb.user:release-ci" \
+          | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).token??""))')
+
+        if [ -z "$TOKEN" ]; then
+          echo '::error::The throwaway registry issued no token'
+          exit 1
+        fi
+        echo "::add-mask::$TOKEN"
+
+        SMOKE_NPMRC="$RUNNER_TEMP/pro-smoke-npmrc"
+        : > "$SMOKE_NPMRC"
+        echo "smoke_npmrc=$SMOKE_NPMRC" >> "$GITHUB_ENV"
+        NPM_CONFIG_USERCONFIG="$SMOKE_NPMRC" npm config set registry="http://localhost:$PORT/"
+        NPM_CONFIG_USERCONFIG="$SMOKE_NPMRC" npm config set "@nocobase:registry=http://localhost:$PORT/"
+        NPM_CONFIG_USERCONFIG="$SMOKE_NPMRC" npm config set "//localhost:$PORT/:_authToken=$TOKEN"
+
+    - name: Publish selected packages to the throwaway registry
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PORT: ${{ inputs.port }}
+      run: |
+        set -euo pipefail
+        LOCAL="http://localhost:$PORT/"
+        export NPM_CONFIG_USERCONFIG="$smoke_npmrc"
+        export XDG_CONFIG_HOME="$RUNNER_TEMP/pro-smoke-config"
+        export PNPM_CONFIG_REGISTRY="$LOCAL"
+        export npm_config_registry="$LOCAL"
+        export NPM_CONFIG_REGISTRY="$LOCAL"
+        export NODE_AUTH_TOKEN=''
+
+        for tool in pnpm npm; do
+          for setting in registry @nocobase:registry; do
+            RESOLVED="$("$tool" config get "$setting" | tr -d '\r' | tail -1)"
+            if [ "$RESOLVED" != "$LOCAL" ] && [ "$RESOLVED" != "${LOCAL%/}" ]; then
+              echo "::error::$tool resolves $setting to '$RESOLVED' instead of '$LOCAL'. Publishing now could reach another registry."
+              exit 1
+            fi
+            echo "$tool $setting -> $RESOLVED"
+          done
+        done
+
+        pnpm \
+          --filter './packages/**' \
+          --filter './vendor/nocobase3/packages/**' \
+          --filter '!@nocobase/app-template-examples' \
+          --filter '!@nocobase/app-template-hub' \
+          --recursive publish \
+          --no-git-checks \
+          --registry "$LOCAL" \
+          --tag smoke
+
+        while IFS=$'\t' read -r NAME VERSION; do
+          RESOLVED=$(npm view "$NAME@$VERSION" version --registry "$LOCAL")
+          if [ "$RESOLVED" != "$VERSION" ]; then
+            echo "::error::$NAME@$VERSION was not published to the throwaway registry"
+            exit 1
+          fi
+          echo "$NAME@$VERSION is available from the throwaway registry"
+        done < <(node --input-type=module -e '
+          import { readPublishableWorkspacePackages } from "./scripts/smoke-registry-config.mjs";
+          for (const pkg of readPublishableWorkspacePackages(process.cwd())) {
+            console.log(`${pkg.name}\t${pkg.version}`);
+          }
+        ')
+
+    - name: Generate OSS Default with Pro plugins and verify Skill sync, test, dev, build, and start
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PORT: ${{ inputs.port }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        set -euo pipefail
+        export NPM_CONFIG_USERCONFIG="$smoke_npmrc"
+        export XDG_CONFIG_HOME="$RUNNER_TEMP/pro-smoke-config"
+
+        CREATE_APP_VERSION=$(node -p "require('./vendor/nocobase3/packages/tools/create-app/package.json').version")
+        TEMPLATE_VERSION=$(node -p "require('./vendor/nocobase3/packages/templates/app-template-default/package.json').version")
+        MAIL_VERSION=$(node -p "require('./packages/plugins/app-plugin-mail/package.json').version")
+        AI_KNOWLEDGE_BASE_VERSION=$(node -p "require('./packages/plugins/app-plugin-ai-knowledge-base/package.json').version")
+        bash ./scripts/smoke-create-app.sh \
+          --registry "http://localhost:$PORT" \
+          --create-app-version "$CREATE_APP_VERSION" \
+          --template "@nocobase/app-template-default@$TEMPLATE_VERSION" \
+          --mail-version "$MAIL_VERSION" \
+          --ai-knowledge-base-version "$AI_KNOWLEDGE_BASE_VERSION" \
+          --timeout "$TIMEOUT" \
+          --workdir "$RUNNER_TEMP/create-app-smoke/default-with-pro"
+
+    - name: Stop the throwaway registry
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PORT: ${{ inputs.port }}
+      run: |
+        if [ "${RUNNER_DEBUG:-}" = '1' ]; then
+          docker logs pro-release-verdaccio || true
+        fi
+        docker rm -f pro-release-verdaccio > /dev/null 2>&1 || true
+        rm -f "${smoke_npmrc:-}" "$RUNNER_TEMP/pro-smoke-verdaccio.yaml"
+        rm -rf "$RUNNER_TEMP/pro-smoke-config"
+
+        SHARED="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+        if [ -f "$SHARED" ] && grep -q "localhost:$PORT" "$SHARED"; then
+          echo "::error::$SHARED still refers to the throwaway registry. A later step could use the wrong registry."
+          grep -n "localhost:$PORT" "$SHARED" | sed 's/_authToken=.*/_authToken=<redacted>/'
+          exit 1
+        fi

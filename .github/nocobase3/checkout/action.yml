@@ -1,0 +1,95 @@
+name: Check out fixed Pro snapshot
+description: Validate a Pro CI dispatch, check out its immutable commits, optionally merge the PR, and revoke the checkout token.
+
+inputs:
+  app-id:
+    description: GitHub App ID installed on nocobase/nocobase3-pro.
+    required: true
+  private-key:
+    description: GitHub App private key.
+    required: true
+  request-id:
+    description: UUID identifying the originating source event.
+    required: true
+  event-name:
+    description: Source event type.
+    required: true
+  head-sha:
+    description: Immutable source head commit.
+    required: true
+  base-sha:
+    description: Immutable source base commit or the zero SHA.
+    required: true
+  target-branch:
+    description: Source target branch.
+    required: true
+  pr-number:
+    description: Source pull request number or 0 for a push.
+    required: true
+  skip-label:
+    description: Whether the source pull request has the release:skip label.
+    required: true
+  merge-pull-request:
+    description: Create and check out a local merge commit from base_sha and head_sha.
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Validate dispatch inputs
+      shell: bash
+      env:
+        REQUEST_ID: ${{ inputs.request-id }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        SKIP_LABEL: ${{ inputs.skip-label }}
+      run: node "$GITHUB_ACTION_PATH/../validate-inputs.mjs"
+
+    - name: Create a read-only source token
+      id: app-token
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: nocobase
+        repositories: nocobase3-pro
+        permission-contents: read
+        skip-token-revoke: true
+
+    - name: Check out the immutable Pro head
+      uses: actions/checkout@v4
+      with:
+        repository: nocobase/nocobase3-pro
+        ref: ${{ inputs.head-sha }}
+        token: ${{ steps.app-token.outputs.token }}
+        persist-credentials: false
+        fetch-depth: 0
+        submodules: recursive
+        path: pro
+        show-progress: false
+
+    - name: Prepare the immutable source snapshot
+      shell: bash
+      working-directory: pro
+      env:
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        MERGE_PULL_REQUEST: ${{ inputs.merge-pull-request }}
+      run: node "$GITHUB_ACTION_PATH/../prepare-snapshot.mjs"
+
+    - name: Revoke the source token
+      if: ${{ always() && steps.app-token.outputs.token != '' }}
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        curl --fail-with-body --silent --show-error --location \
+          --request DELETE \
+          --header 'Accept: application/vnd.github+json' \
+          --header "Authorization: Bearer $APP_TOKEN" \
+          --header 'X-GitHub-Api-Version: 2022-11-28' \
+          https://api.github.com/installation/token
