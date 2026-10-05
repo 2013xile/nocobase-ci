@@ -179,14 +179,17 @@ jobs:
             script: typecheck
             pack_check: false
             peers_check: true
+            openapi_check: true
           - name: Test
             script: test
             pack_check: false
             peers_check: false
+            openapi_check: false
           - name: Build
             script: build
             pack_check: true
             peers_check: false
+            openapi_check: false
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -226,6 +229,14 @@ jobs:
         if: ${{ matrix.peers_check }}
         working-directory: pro
         run: pnpm peers:check
+
+      # Starts the OSS Default application with the Pro plugins on SQLite test databases and fails on an /api route
+      # that declares nothing, an operation without tags, summary or operationId, a duplicate operationId, or a schema
+      # reference the API document cannot resolve. It runs from TypeScript sources and needs no build.
+      - name: Check API document declarations
+        if: ${{ matrix.openapi_check }}
+        working-directory: pro
+        run: pnpm openapi:check
 
       - name: Configure NocoBase dependency registry
         if: ${{ matrix.script == 'build' }}
