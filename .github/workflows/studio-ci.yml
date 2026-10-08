@@ -278,7 +278,45 @@ jobs:
           skip-label: ${{ inputs.skip_label }}
           merge-pull-request: 'false'
 
+      # A pull request that changes nothing the app runs (only documentation, tests, e2e or CI files), or that carries
+      # the `no-preview` label, gets no preview: the job ends here and Studio is told nothing, so nothing waits for it.
+      - name: Read the pull request's labels
+        id: pr-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: studio
+          permission-pull-requests: read
+
+      - name: Decide whether to preview
+        id: gate
+        env:
+          GH_TOKEN: ${{ steps.pr-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          skip() {
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "### Preview skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            echo "Preview skipped: $1"
+          }
+          if gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qx 'no-preview'; then
+            skip 'The pull request has the `no-preview` label.'
+            exit 0
+          fi
+          base=$(git -C studio merge-base "$BASE_SHA" "$HEAD_SHA")
+          runtime=$(git -C studio diff --name-only "$base" "$HEAD_SHA" | grep -viE '^(docs/|tests/|e2e/|\.github/)|\.md$' || true)
+          if [ -z "$runtime" ]; then
+            skip 'It changes only documentation, tests, e2e or CI files.'
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - name: Install the nb-studio CLI
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: |
@@ -291,38 +329,45 @@ jobs:
           printf %s "$NB_STUDIO_API_KEY" | NB_STUDIO_KEYCHAIN=off "$RUNNER_TEMP/nb-studio/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
 
       - name: Report the build
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
 
       - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
           run_install: false
 
       - name: Set up Node.js
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - name: Install dependencies
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         working-directory: studio
         run: pnpm install --frozen-lockfile
 
       # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
       - name: Build the deployment archive
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         working-directory: studio
         run: pnpm build --target linux-x64 --tar
 
       # The pull request's own App: Studio records the pull request as its source and removes it once it goes.
       - name: Ensure the pull request's App
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: nb-studio app ensure "$APP_ID" --environment "$ENVIRONMENT" --repository "$REPOSITORY"
 
       # Uploads the archive and deploys it; a protected environment asks its approvers instead.
       - name: Deploy
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file studio/storage/exports/dist.tar.gz
