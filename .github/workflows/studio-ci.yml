@@ -286,6 +286,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nb-studio"
           curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/nb-studio"
           echo "$RUNNER_TEMP/nb-studio/bin" >> "$GITHUB_PATH"
+          # Signs the CLI in with the key, as Studio's generated workflow does: a command the CLI derives from the server's
+          # manifest (app ensure, deploy) fetches that manifest with the stored sign-in, not with NB_STUDIO_API_KEY.
+          printf %s "$NB_STUDIO_API_KEY" | NB_STUDIO_KEYCHAIN=off "$RUNNER_TEMP/nb-studio/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
 
       - name: Report the build
         env:
