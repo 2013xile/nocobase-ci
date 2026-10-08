@@ -3,8 +3,8 @@ import process from 'node:process';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const SHA_PATTERN = /^[0-9a-f]{40}$/iu;
 const ZERO_SHA = '0'.repeat(40);
-// The private repositories nocobase-bot forwards; the checkout token is limited to the one named.
-export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio'];
+// The repositories nocobase-bot forwards; the checkout token is limited to the one named.
+export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3'];
 
 export class InputValidationError extends Error {
   constructor(message) {
