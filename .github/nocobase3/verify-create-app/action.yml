@@ -158,7 +158,12 @@ runs:
 
         CREATE_APP_VERSION=$(node -p "require('./vendor/nocobase3/packages/tools/create-app/package.json').version")
         TEMPLATE_VERSION=$(node -p "require('./vendor/nocobase3/packages/templates/app-template-default/package.json').version")
-        MAIL_VERSION=$(node -p "require('./packages/plugins/app-plugin-mail/package.json').version")
+        # Mail is moving upstream; old pinned Pro revisions still own it locally.
+        MAIL_MANIFEST=./vendor/nocobase3/packages/plugins/app-plugin-mail/package.json
+        if [ ! -f "$MAIL_MANIFEST" ]; then
+          MAIL_MANIFEST=./packages/plugins/app-plugin-mail/package.json
+        fi
+        MAIL_VERSION=$(node -p 'require(process.argv[1]).version' "$MAIL_MANIFEST")
         AI_KNOWLEDGE_BASE_VERSION=$(node -p "require('./packages/plugins/app-plugin-ai-knowledge-base/package.json').version")
         bash ./scripts/smoke-create-app.sh \
           --registry "http://localhost:$PORT" \
