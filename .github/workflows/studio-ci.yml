@@ -7,11 +7,11 @@ run-name: studio-ci:${{ inputs.request_id }}
 # - Every request: `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document` and `CLI reference`.
 # - Pull requests: `Studio e2e`, and `Preview`, which deploys the pull request's head to its own App `studio-pr-<n>` in
 #   Studio's `preview` environment, as Studio's standard preview workflow does (`nb-studio build ci workflows`).
-# - Pushes to main: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs and delivers them to the Studio
-#   server's runner dist directory over SSH (.github/studio/dist-receive.py is the only thing that key may run).
+# - Pushes to main: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image built by
+#   studio-image.yml bakes them in; this job only proves they build, and keeps them as artifacts for three days.
 #
-# This repository is public: nothing uploads Studio's source or builds as artifacts or caches. Only the e2e job uploads
-# its screenshots and traces, on failure, kept for three days.
+# This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
+# the tarballs, only the e2e job uploads its screenshots and traces, on failure, kept for three days.
 
 on:
   workflow_dispatch:
@@ -332,7 +332,7 @@ jobs:
 
   # What Studio serves to its install script, to runners and to `nb-studio update`: the `nb-studio` CLI and the runner,
   # `nocobase-runner` (from the framework source in vendor/nocobase3), as standalone tarballs for every platform, each
-  # product with its own manifest. They are not uploaded here; they go straight to the Studio server.
+  # product with its own manifest.
   dist:
     name: Dist
     if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
@@ -385,25 +385,20 @@ jobs:
         working-directory: studio
         run: pnpm nocobase cli build --runner --out output/dist
 
-      # The key may only run the receiver, which merges the archive into storage/runners/dist the way `cli build`
-      # merges into its output and hands it to the user Studio runs as.
-      - name: Deliver to the Studio server
-        env:
-          SSH_KEY: ${{ secrets.STUDIO_DIST_SSH_KEY }}
-          SSH_HOST: ${{ secrets.STUDIO_DIST_SSH_HOST }}
-          SSH_KNOWN_HOSTS: ${{ secrets.STUDIO_DIST_SSH_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          key="$RUNNER_TEMP/studio-dist-key"
-          known_hosts="$RUNNER_TEMP/studio-dist-known-hosts"
-          trap 'rm -f "$key" "$known_hosts"' EXIT
-          (umask 077 && printf '%s\n' "$SSH_KEY" > "$key")
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$known_hosts"
-          tar -C studio/output/dist -czf - stable | ssh -T \
-            -i "$key" \
-            -o IdentitiesOnly=yes \
-            -o IdentityAgent=none \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$known_hosts" \
-            "root@$SSH_HOST"
+      # Both products are public (the runner is @nocobase/agent-runner, nb-studio the branded app-cli-client), so they
+      # are kept briefly for a look. The image studio-image.yml builds carries its own copy.
+      - name: Upload the nb-studio tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-dist-nb-studio
+          path: studio/output/dist/stable/nb-studio
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload the nocobase-runner tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-dist-nocobase-runner
+          path: studio/output/dist/stable/nocobase-runner
+          if-no-files-found: error
+          retention-days: 3

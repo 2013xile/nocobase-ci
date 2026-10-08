@@ -54,12 +54,11 @@ test('checks out only nocobase/studio through the shared checkout action', () =>
   assert.match(job('preview'), /merge-pull-request: 'false'/u);
 });
 
-test('gives deployment secrets only to the jobs that deploy', () => {
-  for (const id of ['submodule', 'check', 'e2e']) {
+test('gives the deployment secret only to the preview', () => {
+  for (const id of ['submodule', 'check', 'e2e', 'dist']) {
     assert.doesNotMatch(job(id), /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY)/u, id);
   }
-  assert.doesNotMatch(job('preview'), /secrets\.STUDIO_DIST/u);
-  assert.doesNotMatch(job('dist'), /secrets\.NB_STUDIO/u);
+  assert.doesNotMatch(workflow, /\bssh\b/u);
   assert.doesNotMatch(workflow, /^ {6}NB_STUDIO_API_KEY:/mu);
 });
 
@@ -75,11 +74,24 @@ test('names the repository and the commit in every preview call to Studio', () =
   assert.match(job('preview'), /LOGS: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/u);
 });
 
-test('uploads nothing but failed e2e results, briefly, and caches nothing', () => {
+test('uploads only failed e2e results and the public tarballs, briefly, and caches nothing', () => {
   assert.doesNotMatch(workflow, /actions\/cache|^\s+cache:/mu);
-  const uploads = [...workflow.matchAll(/- name: .+\n        if: (.+)\n        uses: actions\/upload-artifact@v4\n        with:\n(?:          .+\n)*?          retention-days: (\d+)/gu)];
+  const uploads = [...workflow.matchAll(/- name: .+\n(?:        if: (.+)\n)?        uses: actions\/upload-artifact@v4\n        with:\n(?:          .+\n)*?          retention-days: (\d+)/gu)];
   assert.equal([...workflow.matchAll(/actions\/upload-artifact/gu)].length, uploads.length);
-  assert.equal(uploads.length, 2);
-  assert.ok(uploads.every(([, condition, days]) => condition === '${{ failure() }}' && days === '3'));
-  assert.ok(uploads.every(([upload]) => job('e2e').includes(upload)));
+  assert.ok(uploads.every(([, , days]) => days === '3'));
+  const e2e = uploads.filter(([upload]) => job('e2e').includes(upload));
+  const dist = uploads.filter(([upload]) => job('dist').includes(upload));
+  assert.equal(e2e.length, 2);
+  assert.ok(e2e.every(([, condition]) => condition === '${{ failure() }}'));
+  assert.equal(dist.length, 2);
+  assert.ok(dist.every(([upload]) => /path: studio\/output\/dist\/stable\/(nb-studio|nocobase-runner)\n/u.test(upload)));
+  assert.equal(e2e.length + dist.length, uploads.length);
+});
+
+test('bakes the tarballs into the Studio image', () => {
+  const image = readFileSync(path.join(root, '.github/workflows/studio-image.yml'), 'utf8');
+  const build = image.indexOf('cli build --out runners-dist');
+  const runner = image.indexOf('cli build --runner --out runners-dist');
+  const docker = image.indexOf('docker/build-push-action');
+  assert.ok(build > 0 && runner > 0 && build < docker && runner < docker);
 });

@@ -2,7 +2,8 @@ name: Studio image
 run-name: studio-image:${{ inputs.ref }}
 
 # Builds NocoBase Studio's production image from the private nocobase/studio repository and pushes it to the internal
-# registry as `studio:<branch>` (when `ref` is a branch) and `studio:<short sha>`. The internal server pulls it with
+# registry as `studio:<branch>` (when `ref` is a branch) and `studio:<short sha>`. The image carries the `nb-studio` and
+# `nocobase-runner` tarballs for every platform in /app/runners/dist, which Studio serves. The internal server pulls it with
 # the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
 #
 #   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=main
@@ -27,7 +28,7 @@ jobs:
   image:
     name: Build and push the Studio image
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       # Studio's build typechecks it together with the framework's sources, which needs more than the default heap.
       NODE_OPTIONS: --max-old-space-size=6144
@@ -90,6 +91,13 @@ jobs:
       # dist/ is built here, with this job's heap, and the image takes it prebuilt.
       - name: Build dist for linux-x64
         run: pnpm build --target linux-x64
+
+      # The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as stable/<product>/... .
+      - name: Build the nb-studio tarballs
+        run: pnpm nocobase cli build --out runners-dist
+
+      - name: Build the nocobase-runner tarballs
+        run: pnpm nocobase cli build --runner --out runners-dist
 
       - name: Sign in to the registry
         uses: docker/login-action@v3
