@@ -71,7 +71,10 @@ test('keeps the nine check job names and branch conditions', () => {
 });
 
 test('keeps source access read-only and revokes the token before source code runs', () => {
-  assert.match(checkout, /repository: nocobase\/nocobase3-pro/u);
+  assert.match(checkout, /  repository:\n    description: .+\n    default: nocobase3-pro\n/u);
+  assert.match(checkout, /repositories: \$\{\{ inputs\.repository \}\}/u);
+  assert.match(checkout, /repository: nocobase\/\$\{\{ inputs\.repository \}\}/u);
+  assert.doesNotMatch(workflow, /^\s+repository: /mu);
   assert.match(checkout, /permission-contents: read/u);
   assert.match(checkout, /persist-credentials: false/u);
   assert.match(checkout, /skip-token-revoke: true/u);

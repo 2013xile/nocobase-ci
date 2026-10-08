@@ -1,9 +1,15 @@
-name: Check out fixed Pro snapshot
-description: Validate a Pro CI dispatch, check out its immutable commits, optionally merge the PR, and revoke the checkout token.
+name: Check out fixed source snapshot
+description: Validate a forwarded CI dispatch, check out its immutable commits, optionally merge the PR, and revoke the checkout token.
 
 inputs:
+  repository:
+    description: The private source repository under nocobase, one of the forwarded repositories (nocobase3-pro or studio).
+    default: nocobase3-pro
+  path:
+    description: The directory the source is checked out into.
+    default: pro
   app-id:
-    description: GitHub App ID installed on nocobase/nocobase3-pro.
+    description: GitHub App ID installed on the source repository.
     required: true
   private-key:
     description: GitHub App private key.
@@ -39,6 +45,8 @@ runs:
     - name: Validate dispatch inputs
       shell: bash
       env:
+        REPOSITORY: ${{ inputs.repository }}
+        CHECKOUT_PATH: ${{ inputs.path }}
         REQUEST_ID: ${{ inputs.request-id }}
         EVENT_NAME: ${{ inputs.event-name }}
         HEAD_SHA: ${{ inputs.head-sha }}
@@ -55,25 +63,25 @@ runs:
         app-id: ${{ inputs.app-id }}
         private-key: ${{ inputs.private-key }}
         owner: nocobase
-        repositories: nocobase3-pro
+        repositories: ${{ inputs.repository }}
         permission-contents: read
         skip-token-revoke: true
 
-    - name: Check out the immutable Pro head
+    - name: Check out the immutable source head
       uses: actions/checkout@v4
       with:
-        repository: nocobase/nocobase3-pro
+        repository: nocobase/${{ inputs.repository }}
         ref: ${{ inputs.head-sha }}
         token: ${{ steps.app-token.outputs.token }}
         persist-credentials: false
         fetch-depth: 0
         submodules: recursive
-        path: pro
+        path: ${{ inputs.path }}
         show-progress: false
 
     - name: Prepare the immutable source snapshot
       shell: bash
-      working-directory: pro
+      working-directory: ${{ inputs.path }}
       env:
         EVENT_NAME: ${{ inputs.event-name }}
         HEAD_SHA: ${{ inputs.head-sha }}
