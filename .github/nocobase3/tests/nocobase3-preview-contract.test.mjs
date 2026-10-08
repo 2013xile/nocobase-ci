@@ -8,6 +8,15 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 const workflow = readFileSync(path.join(root, '.github/workflows/nocobase3-preview.yml'), 'utf8');
 const proWorkflow = readFileSync(path.join(root, '.github/workflows/nocobase3-pro-ci.yml'), 'utf8');
 
+function job(id) {
+  const start = workflow.indexOf(`\n  ${id}:\n`);
+  assert.notEqual(start, -1, `job ${id}`);
+  const next = workflow.slice(start + 1).search(/\n  [a-z][a-z0-9-]*:\n/u);
+  return next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+}
+
+const jobIds = ['preview', 'studio-preview'];
+
 const inputNames = (source) => [
   ...source
     .slice(source.indexOf('  workflow_dispatch:\n'), source.indexOf('\npermissions:\n'))
@@ -19,31 +28,63 @@ test('takes the same dispatch inputs as Pro and names its runs nocobase3-preview
   assert.deepEqual(inputNames(workflow), inputNames(proWorkflow));
 });
 
-test('has the one job nocobase-bot mirrors, for pull requests only', () => {
-  const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map((match) => match[2]);
-  assert.deepEqual(jobs, ['Preview']);
-  assert.match(workflow, /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u);
+test('has the two jobs nocobase-bot mirrors, for pull requests only', () => {
+  const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map((match) => match.slice(1));
+  assert.deepEqual(jobs, [
+    ['preview', 'Preview'],
+    ['studio-preview', 'Studio preview'],
+  ]);
+  for (const id of jobIds) {
+    assert.match(job(id), /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u, id);
+    assert.doesNotMatch(job(id), /\n    needs:/u, id);
+    assert.match(job(id), /REPOSITORY: nocobase\/nocobase3\n/u, id);
+  }
 });
 
-test('checks out only the pull request head of nocobase/nocobase3 through the shared checkout action', () => {
-  const checkouts = [...workflow.matchAll(/uses: \.\/\.github\/nocobase3\/checkout\n        with:\n          repository: (.+)\n          path: (.+)\n/gu)];
-  assert.equal(checkouts.length, 1);
-  assert.deepEqual(checkouts[0].slice(1), ['nocobase3', 'nocobase3']);
-  assert.match(workflow, /merge-pull-request: 'false'/u);
-  assert.match(workflow, /REPOSITORY: nocobase\/nocobase3\n/u);
+test('checks out the pull request head, and Studio only at a fixed main, through the shared checkout action', () => {
+  const checkouts = (id) =>
+    [...job(id).matchAll(/uses: \.\/\.github\/nocobase3\/checkout\n        with:\n          repository: (.+)\n          path: (.+)\n/gu)].map(
+      (match) => match.slice(1),
+    );
+  assert.deepEqual(checkouts('preview'), [['nocobase3', 'nocobase3']]);
+  assert.deepEqual(checkouts('studio-preview'), [
+    ['nocobase3', 'nocobase3'],
+    ['studio', 'studio'],
+  ]);
+  for (const id of jobIds) assert.equal([...job(id).matchAll(/merge-pull-request: 'false'/gu)].length, checkouts(id).length, id);
+  const studio = job('studio-preview');
+  assert.match(studio, /head-sha: \$\{\{ steps\.studio-main\.outputs\.sha \}\}\n/u);
+  assert.match(studio, /event-name: push\n/u);
+  assert.match(studio, /gh api repos\/nocobase\/studio\/commits\/main --jq \.sha/u);
+  assert.match(studio, /repositories: studio\n          permission-contents: read\n          skip-token-revoke: true\n/u);
+  assert.match(studio, /--request DELETE[\s\S]+installation\/token/u);
+  assert.match(studio, /rm -rf studio\/vendor\/nocobase3\n          mv nocobase3 studio\/vendor\/nocobase3\n/u);
+  assert.match(studio, /mirror-workspace\.mjs" studio\/pnpm-workspace\.yaml studio\/vendor\/nocobase3\/pnpm-workspace\.yaml/u);
 });
 
 test('skips on the no-preview label and on changes the application does not run', () => {
-  assert.match(workflow, /\[ "\$SKIP_LABEL" = 'true' \]/u);
-  assert.match(workflow, /grep -qx 'no-preview'/u);
-  assert.match(workflow, /git -C nocobase3 merge-base "\$BASE_SHA" "\$HEAD_SHA"/u);
-  const gated = [...workflow.matchAll(/      - name: (.+)\n        if: (.+)\n/gu)];
-  const afterGate = workflow.slice(workflow.indexOf('id: gate'));
-  const steps = [...afterGate.matchAll(/^      - name: (.+)$/gmu)].map((match) => match[1]);
-  for (const step of steps) {
-    const condition = gated.find(([, name]) => name === step)?.[2];
-    assert.ok(condition?.includes('steps.gate.outputs.skip'), step);
+  for (const id of jobIds) {
+    const source = job(id);
+    assert.match(source, /\[ "\$SKIP_LABEL" = 'true' \]/u, id);
+    assert.match(source, /grep -qx 'no-preview'/u, id);
+    assert.match(source, /git -C nocobase3 merge-base "\$BASE_SHA" "\$HEAD_SHA"/u, id);
+    const gated = [...source.matchAll(/      - name: (.+)\n        (?:id: .+\n        )?if: (.+)\n/gu)];
+    const afterGate = source.slice(source.indexOf('id: gate'));
+    const steps = [...afterGate.matchAll(/^      - name: (.+)$/gmu)].map((match) => match[1]);
+    for (const step of steps) {
+      const condition = gated.find(([, name]) => name === step)?.[2];
+      assert.ok(condition?.includes('steps.gate.outputs.skip'), `${id}: ${step}`);
+    }
   }
+});
+
+test('builds Studio as studio-ci builds it, on the pull request framework', () => {
+  const studio = job('studio-preview');
+  assert.match(studio, /package_json_file: studio\/package\.json/u);
+  assert.match(studio, /working-directory: studio\n        run: pnpm install --no-frozen-lockfile\n/u);
+  assert.match(studio, /working-directory: studio\n        run: pnpm build --target linux-x64 --tar\n/u);
+  assert.match(studio, /--file studio\/storage\/exports\/dist\.tar\.gz/u);
+  assert.match(studio, /APP_ID: nocobase3-studio-pr-\$\{\{ inputs\.pr_number \}\}/u);
 });
 
 test('builds the examples template with the repository pnpm', () => {
@@ -69,7 +110,7 @@ test('gives its own Studio key only to the steps that call Studio', () => {
 
 test('names the repository and the commit in every call to Studio', () => {
   const calls = [...workflow.matchAll(/run: (nb-studio .+)$/gmu)].map((match) => match[1]);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 8);
   for (const call of calls) assert.match(call, /--repository "\$REPOSITORY"/u, call);
   for (const call of calls.filter((call) => !call.startsWith('nb-studio app ensure'))) {
     assert.match(call, /--sha "\$HEAD_SHA"/u, call);

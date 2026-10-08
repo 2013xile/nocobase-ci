@@ -2,10 +2,13 @@ name: NocoBase 3 preview
 run-name: nocobase3-preview:${{ inputs.request_id }}
 
 # Previews of nocobase/nocobase3 pull requests in NocoBase Studio, dispatched by nocobase-bot (docs/ci-forwarding.md
-# there), which mirrors the job below as the check run `Preview` on nocobase/nocobase3; the job name is that protocol.
-# nocobase3's own CI stays in its repository: this workflow only builds the examples application template
-# (packages/templates/app-template-examples) from the pull request's head and deploys it to its own App
-# `nocobase3-pr-<n>` in Studio's `preview` environment, as studio-ci.yml's `Preview` does for nocobase/studio.
+# there), which mirrors the jobs below as the check runs `Preview` and `Studio preview` on nocobase/nocobase3; the job
+# names are that protocol. nocobase3's own CI stays in its repository. The two jobs run in parallel:
+#
+# - `Preview` builds the examples application template (packages/templates/app-template-examples) from the pull
+#   request's head and deploys it to its own App `nocobase3-pr-<n>` in Studio's `preview` environment, as
+#   studio-ci.yml's `Preview` does for nocobase/studio.
+# - `Studio preview` builds Studio's main on the pull request's head and deploys it to `nocobase3-studio-pr-<n>`.
 #
 # The bot forwards only pull requests from branches of nocobase/nocobase3 itself, never from forks: the build runs the
 # pull request's code on the runner that later holds the Studio key.
@@ -188,6 +191,201 @@ jobs:
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
         run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file "nocobase3/$TEMPLATE/storage/exports/dist.tar.gz"
+
+      - name: Report the failure
+        if: ${{ failure() && steps.gate.outputs.skip == 'false' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
+
+  # Studio itself on the pull request's framework: the private nocobase/studio at the head of its main, with the pull
+  # request's head of nocobase/nocobase3 in place of the commit its vendor/nocobase3 submodule pins, built as
+  # studio-ci.yml's `Preview` builds Studio and deployed to its own App `nocobase3-studio-pr-<n>`. Neither repository is
+  # changed. Studio main follows a pinned framework commit, so a pull request whose framework changes break Studio, or
+  # that is based on a develop Studio has not caught up with, fails here rather than in its own CI.
+  studio-preview:
+    name: Studio preview
+    if: ${{ inputs.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
+      REPOSITORY: nocobase/nocobase3
+      HEAD_SHA: ${{ inputs.head_sha }}
+      APP_ID: nocobase3-studio-pr-${{ inputs.pr_number }}
+      ENVIRONMENT: preview
+      LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed pull request head
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: nocobase3
+          path: nocobase3
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+
+      # The same gate as `Preview`.
+      - name: Read the pull request's labels
+        id: pr-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase3
+          permission-pull-requests: read
+
+      - name: Decide whether to preview
+        id: gate
+        env:
+          GH_TOKEN: ${{ steps.pr-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: |
+          skip() {
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "### Studio preview skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            echo "Studio preview skipped: $1"
+          }
+          if [ "$SKIP_LABEL" = 'true' ] || gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qx 'no-preview'; then
+            skip "The pull request has the \`no-preview\` label."
+            exit 0
+          fi
+          base=$(git -C nocobase3 merge-base "$BASE_SHA" "$HEAD_SHA")
+          runtime=$(git -C nocobase3 diff --name-only "$base" "$HEAD_SHA" | grep -viE '^(docs/|studio/|skills/|\.changeset/|\.github/)|(^|/)(tests|e2e)/|\.test\.tsx?$|\.md$' || true)
+          if [ -z "$runtime" ]; then
+            skip 'It changes only documentation, tests, changesets, Skills, Studio or CI files.'
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # Studio's main is fixed to one commit before anything checks it out, and the token that read it is revoked at once.
+      - name: Create a read-only Studio token
+        id: studio-token
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: studio
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Fix Studio's main
+        id: studio-main
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.studio-token.outputs.token }}
+        run: |
+          sha=$(gh api repos/nocobase/studio/commits/main --jq .sha)
+          curl --fail-with-body --silent --show-error --location --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Studio main: $sha"
+
+      # Studio's main checked out like a push to it, so the shared action validates and pins it the same way.
+      - name: Check out Studio's main
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: push
+          head-sha: ${{ steps.studio-main.outputs.sha }}
+          base-sha: '0000000000000000000000000000000000000000'
+          target-branch: main
+          pr-number: '0'
+          skip-label: 'false'
+          merge-pull-request: 'false'
+
+      # pnpm reads the catalog, overrides and build settings only from Studio's workspace root, which mirrors
+      # vendor/nocobase3/pnpm-workspace.yaml below its own `packages:`; it is mirrored again from the pull request's.
+      - name: Put the pull request's head in vendor/nocobase3
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        run: |
+          rm -rf studio/vendor/nocobase3
+          mv nocobase3 studio/vendor/nocobase3
+          node "$GITHUB_WORKSPACE/.github/nocobase3/mirror-workspace.mjs" studio/pnpm-workspace.yaml studio/vendor/nocobase3/pnpm-workspace.yaml
+          git -C studio diff --stat -- pnpm-workspace.yaml
+
+      - name: Install the nb-studio CLI
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
+        run: |
+          eval "$(curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER/api/agents/dist/products/nb-studio/targets/linux-x64?format=env")"
+          mkdir -p "$RUNNER_TEMP/nb-studio"
+          curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/nb-studio"
+          echo "$RUNNER_TEMP/nb-studio/bin" >> "$GITHUB_PATH"
+          printf %s "$NB_STUDIO_API_KEY" | NB_STUDIO_KEYCHAIN=off "$RUNNER_TEMP/nb-studio/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
+
+      - name: Report the build
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
+
+      - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: studio/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Studio's lockfile describes the framework it pins; a pull request that changes the framework's dependencies
+      # needs it resolved again, which pnpm does from the lockfile's versions wherever they still fit.
+      - name: Install dependencies
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        working-directory: studio
+        run: pnpm install --no-frozen-lockfile
+
+      # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
+      - name: Build the deployment archive
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        working-directory: studio
+        run: pnpm build --target linux-x64 --tar
+
+      - name: Ensure the pull request's App
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
+        run: nb-studio app ensure "$APP_ID" --environment "$ENVIRONMENT" --repository "$REPOSITORY"
+
+      - name: Deploy
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3 }}
+        run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file studio/storage/exports/dist.tar.gz
 
       - name: Report the failure
         if: ${{ failure() && steps.gate.outputs.skip == 'false' }}
