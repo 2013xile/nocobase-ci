@@ -18,6 +18,14 @@ Logs are public by design, but the workflow does not upload source, packages, lo
 - `Dist` builds the `nb-studio` and `nocobase-runner` tarballs as a check and keeps them as artifacts for three days; both are public. They are not delivered anywhere: `studio-image.yml` builds them into `runners-dist/` before `docker build`, and Studio's `Dockerfile` bakes them into `/app/runners/dist`, which the image serves.
 - Nothing is cached, and no source or application build is uploaded. Besides the tarballs, `Studio e2e` uploads its screenshots and Playwright traces only when it fails, kept for three days.
 
+## NocoBase 3 preview relay
+
+`nocobase3-preview.yml` gives pull requests of the public `nocobase/nocobase3` a preview in NocoBase Studio. `nocobase-bot` dispatches it with the same seven inputs for pull requests to `develop` or `main` from branches of the repository itself, never for forks or pushes, and its run name is `nocobase3-preview:<request_id>`. Its one job, `Preview`, is the only check it mirrors onto `nocobase/nocobase3`; the repository's own GitHub Actions CI is untouched. `skip_label` carries the `no-preview` label here rather than `release:skip`.
+
+- It checks out the pull request's head (not a merge) through the shared `checkout` action with `repository: nocobase3`, then ends without telling Studio anything when the pull request has the `no-preview` label (from `skip_label` or read again from the pull request) or changes only documentation, tests, changesets, Skills, `studio/` or CI files.
+- Otherwise it installs with the pnpm version of the repository's `packageManager` on Node.js 24, runs `pnpm build --target linux-x64 --tar` in `packages/templates/app-template-examples`, which builds the workspace packages the template depends on and vendors them into `dist/`, and deploys `storage/exports/dist.tar.gz` to the App `nocobase3-pr-<n>` in Studio's `preview` environment, naming `--repository nocobase/nocobase3` and `--sha <head_sha>` in every call. Studio makes the App on first deployment and removes it once the pull request is merged or closed.
+- It needs the secret `NB_STUDIO_API_KEY_NOCOBASE3`, the manual CI key of `nocobase/nocobase3` (`nb-studio build ci setup nocobase/nocobase3 --reveal`), and the variable `NB_STUDIO_URL`; the key is given only to the steps that call Studio, never to the install or the build. Nothing is cached or uploaded.
+
 Run the committed contract and Git fixture tests with:
 
 ```bash
@@ -27,5 +35,5 @@ node --test .github/nocobase3/tests/*.test.mjs
 Lint the workflows with:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml
 ```

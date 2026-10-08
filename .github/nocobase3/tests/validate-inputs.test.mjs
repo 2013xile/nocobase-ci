@@ -65,8 +65,9 @@ test('enforces event-specific base, pull request number, and label fields', () =
 test('accepts only the forwarded source repositories and a plain checkout path', () => {
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'studio', checkoutPath: 'studio' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3-pro', checkoutPath: 'pro' }));
-  rejects({ repository: 'nocobase' }, 'repository must be one of nocobase3-pro, studio.');
-  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio.');
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3', checkoutPath: 'nocobase3' }));
+  rejects({ repository: 'nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3.');
+  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3.');
   rejects({ checkoutPath: '../outside' }, 'path must be a single lowercase directory name.');
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
 });

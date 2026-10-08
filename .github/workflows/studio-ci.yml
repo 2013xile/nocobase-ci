@@ -304,7 +304,7 @@ jobs:
             echo "Preview skipped: $1"
           }
           if gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qx 'no-preview'; then
-            skip 'The pull request has the `no-preview` label.'
+            skip "The pull request has the \`no-preview\` label."
             exit 0
           fi
           base=$(git -C studio merge-base "$BASE_SHA" "$HEAD_SHA")
