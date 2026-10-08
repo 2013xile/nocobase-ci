@@ -10,14 +10,22 @@ The existing GitHub App credentials create an installation token restricted to `
 
 Logs are public by design, but the workflow does not upload source, packages, logs, diagnostic artifacts, or caches. The create-app smoke test publishes only to an ephemeral registry on its isolated runner.
 
+## NocoBase Studio CI relay
+
+`studio-ci.yml` runs the CI of the private `nocobase/studio` repository the same way: `nocobase-bot` dispatches it with the same seven inputs, its run name is `studio-ci:<request_id>`, and it checks out the immutable commits through the shared `checkout` action with `repository: studio`, which limits the read-only token to that repository. Its job names are the check names on `nocobase/studio`: `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document` and `CLI reference` for every request, `Studio e2e` and `Preview` for pull requests, and `Dist` for pushes to `main`.
+
+- `Preview` builds the pull request's head (not a merge) and deploys it to the App `studio-pr-<n>` in Studio's `preview` environment, as Studio's standard preview workflow does, naming `--repository nocobase/studio` and `--sha <head_sha>` in every call. It needs the secret `NB_STUDIO_API_KEY` and the variable `NB_STUDIO_URL`; the key is given only to the steps that call Studio, never to the build.
+- `Dist` builds the `nb-studio` and `nocobase-runner` tarballs as a check and keeps them as artifacts for three days; both are public. They are not delivered anywhere: `studio-image.yml` builds them into `runners-dist/` before `docker build`, and Studio's `Dockerfile` bakes them into `/app/runners/dist`, which the image serves.
+- Nothing is cached, and no source or application build is uploaded. Besides the tarballs, `Studio e2e` uploads its screenshots and Playwright traces only when it fails, kept for three days.
+
 Run the committed contract and Git fixture tests with:
 
 ```bash
 node --test .github/nocobase3/tests/*.test.mjs
 ```
 
-Lint the workflow with:
+Lint the workflows with:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml
 ```

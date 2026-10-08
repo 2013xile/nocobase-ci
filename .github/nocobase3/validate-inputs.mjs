@@ -3,6 +3,8 @@ import process from 'node:process';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const SHA_PATTERN = /^[0-9a-f]{40}$/iu;
 const ZERO_SHA = '0'.repeat(40);
+// The private repositories nocobase-bot forwards; the checkout token is limited to the one named.
+export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio'];
 
 export class InputValidationError extends Error {
   constructor(message) {
@@ -16,6 +18,12 @@ function reject(message) {
 }
 
 export function validateInputs(input) {
+  if (input.repository !== undefined && !SOURCE_REPOSITORIES.includes(input.repository)) {
+    reject(`repository must be one of ${SOURCE_REPOSITORIES.join(', ')}.`);
+  }
+  if (input.checkoutPath !== undefined && !/^[a-z][a-z0-9-]{0,63}$/u.test(input.checkoutPath)) {
+    reject('path must be a single lowercase directory name.');
+  }
   if (!UUID_PATTERN.test(input.requestId)) reject('request_id must be a UUID.');
   if (!['pull_request', 'push'].includes(input.eventName)) {
     reject('event_name must be pull_request or push.');
@@ -55,6 +63,8 @@ export function validateInputs(input) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     validateInputs({
+      repository: process.env.REPOSITORY ?? '',
+      checkoutPath: process.env.CHECKOUT_PATH ?? '',
       requestId: process.env.REQUEST_ID ?? '',
       eventName: process.env.EVENT_NAME ?? '',
       headSha: process.env.HEAD_SHA ?? '',
@@ -65,7 +75,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
   } catch (error) {
     if (!(error instanceof InputValidationError)) throw error;
-    console.error(`::error::Invalid Pro CI dispatch: ${error.message}`);
+    console.error(`::error::Invalid CI dispatch: ${error.message}`);
     process.exitCode = 1;
   }
 }

@@ -1,0 +1,404 @@
+name: NocoBase Studio CI
+run-name: studio-ci:${{ inputs.request_id }}
+
+# The CI of the private nocobase/studio repository, dispatched by nocobase-bot (docs/ci-forwarding.md there), which
+# mirrors each job below as a check run of the same name on nocobase/studio. The job names are that protocol.
+#
+# - Every request: `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document` and `CLI reference`.
+# - Pull requests: `Studio e2e`, and `Preview`, which deploys the pull request's head to its own App `studio-pr-<n>` in
+#   Studio's `preview` environment, as Studio's standard preview workflow does (`nb-studio build ci workflows`).
+# - Pushes to main: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image built by
+#   studio-image.yml bakes them in; this job only proves they build, and keeps them as artifacts for three days.
+#
+# This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
+# the tarballs, only the e2e job uploads its screenshots and traces, on failure, kept for three days.
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: UUID shared with the source-repository check runs.
+        required: true
+        type: string
+      event_name:
+        description: Source event type (pull_request or push).
+        required: true
+        type: string
+      head_sha:
+        description: Immutable 40-character source head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable 40-character base SHA, or forty zeroes for the first push.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch.
+        required: true
+        type: string
+      pr_number:
+        description: Positive pull request number, or 0 for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source pull request has the release:skip label (true or false).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-ci-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  submodule:
+    name: Submodule pointer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Warns while vendor/nocobase3 points at a pull request branch; fails when no public branch or tag carries it.
+      - name: Check vendor/nocobase3 is reachable from a public branch or tag
+        working-directory: studio
+        run: node scripts/check-submodule.mjs
+
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Typecheck and type-aware lint load the whole framework from the submodule's sources; the default heap is too small.
+      NODE_OPTIONS: --max-old-space-size=6144
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lint
+            script: lint
+          - name: Typecheck
+            script: typecheck
+          - name: Test
+            script: test
+          # Starts Studio on SQLite test databases with the framework's check; no build needed.
+          - name: API document
+            script: openapi:check
+          # The command reference (docs/cli/reference) is generated from the API document.
+          - name: CLI reference
+            script: cli-reference:check
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: studio
+        run: pnpm install --frozen-lockfile
+
+      - name: ${{ matrix.name }}
+        working-directory: studio
+        run: pnpm ${{ matrix.script }}
+
+  # Studio's browser tests (docs/e2e.md in nocobase/studio) against a throwaway Studio the tests start from the build,
+  # on SQLite with the demo data. No secrets: the server is local and the demo reaches neither GitHub nor a model.
+  e2e:
+    name: Studio e2e
+    if: ${{ inputs.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # The build typechecks Studio and the framework together, which needs more than Node's default heap.
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: studio
+        run: pnpm install --frozen-lockfile
+
+      # Builds the workspace packages Studio depends on, then Studio's client and server into dist.
+      - name: Build Studio
+        working-directory: studio
+        run: pnpm build
+
+      - name: Install Chromium
+        working-directory: studio
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Flows
+        working-directory: studio
+        run: pnpm test:e2e
+
+      - name: Screenshots
+        if: ${{ !cancelled() }}
+        working-directory: studio
+        run: pnpm test:screenshots
+
+      # Public repository: what the pages showed is uploaded only to look into a failure, and kept briefly.
+      - name: Upload screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-screenshots
+          path: studio/output/screenshots
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload failed test traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-e2e-results
+          path: studio/test-results
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # Studio's standard preview workflow (`nb-studio build ci workflows --app directory=. --app appId=studio`), adapted to
+  # a run that is neither in nocobase/studio nor started by its pull_request event: every command names the repository
+  # and the commit itself, and the logs are this run's. The key is given only to the steps that call Studio, through
+  # NB_STUDIO_API_KEY rather than a stored login, and those steps run either before or after Studio's own build.
+  preview:
+    name: Preview
+    if: ${{ inputs.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
+      REPOSITORY: nocobase/studio
+      HEAD_SHA: ${{ inputs.head_sha }}
+      APP_ID: studio-pr-${{ inputs.pr_number }}
+      ENVIRONMENT: preview
+      LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      # The pull request's head itself, not a merge: Studio verifies the commit it deploys is the pull request's head.
+      - name: Check out fixed pull request head
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+
+      - name: Install the nb-studio CLI
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
+        run: |
+          eval "$(curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER/api/agents/dist/products/nb-studio/targets/linux-x64?format=env")"
+          mkdir -p "$RUNNER_TEMP/nb-studio"
+          curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/nb-studio"
+          echo "$RUNNER_TEMP/nb-studio/bin" >> "$GITHUB_PATH"
+
+      - name: Report the build
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: studio
+        run: pnpm install --frozen-lockfile
+
+      # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
+      - name: Build the deployment archive
+        working-directory: studio
+        run: pnpm build --target linux-x64 --tar
+
+      # The pull request's own App: Studio records the pull request as its source and removes it once it goes.
+      - name: Ensure the pull request's App
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
+        run: nb-studio app ensure "$APP_ID" --environment "$ENVIRONMENT" --repository "$REPOSITORY"
+
+      # Uploads the archive and deploys it; a protected environment asks its approvers instead.
+      - name: Deploy
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
+        run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file studio/storage/exports/dist.tar.gz
+
+      - name: Report the failure
+        if: ${{ failure() }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
+
+  # What Studio serves to its install script, to runners and to `nb-studio update`: the `nb-studio` CLI and the runner,
+  # `nocobase-runner` (from the framework source in vendor/nocobase3), as standalone tarballs for every platform, each
+  # product with its own manifest.
+  dist:
+    name: Dist
+    if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: studio
+          path: studio
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: studio
+        run: pnpm install --frozen-lockfile
+
+      # Each builds the workspace packages the product needs, downloads Node.js for each platform (checked against its
+      # SHASUMS256.txt), and packs darwin-arm64, darwin-x64, linux-x64 and linux-arm64 into output/dist/stable/<product>.
+      - name: Build the nb-studio tarballs
+        working-directory: studio
+        run: pnpm nocobase cli build --out output/dist
+
+      - name: Build the nocobase-runner tarballs
+        working-directory: studio
+        run: pnpm nocobase cli build --runner --out output/dist
+
+      # Both products are public (the runner is @nocobase/agent-runner, nb-studio the branded app-cli-client), so they
+      # are kept briefly for a look. The image studio-image.yml builds carries its own copy.
+      - name: Upload the nb-studio tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-dist-nb-studio
+          path: studio/output/dist/stable/nb-studio
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload the nocobase-runner tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-dist-nocobase-runner
+          path: studio/output/dist/stable/nocobase-runner
+          if-no-files-found: error
+          retention-days: 3
