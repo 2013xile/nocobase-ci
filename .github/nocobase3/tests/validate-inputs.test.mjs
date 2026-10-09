@@ -65,9 +65,30 @@ test('enforces event-specific base, pull request number, and label fields', () =
 test('accepts only the forwarded source repositories and a plain checkout path', () => {
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'studio', checkoutPath: 'studio' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3-pro', checkoutPath: 'pro' }));
-  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3', checkoutPath: 'nocobase3' }));
-  rejects({ repository: 'nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3.');
-  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3.');
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3', targetBranch: 'develop', checkoutPath: 'nocobase3' }));
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase', targetBranch: 'v3-develop', checkoutPath: 'nocobase3' }));
+  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase.');
+  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase.');
   rejects({ checkoutPath: '../outside' }, 'path must be a single lowercase directory name.');
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
+});
+
+test('limits only the newly added main-repository source to v3 target branches', () => {
+  for (const [repository, accepted] of [
+    ['nocobase', ['v3-develop', 'v3-main']],
+  ]) {
+    for (const targetBranch of ['main', 'next', 'develop', 'v3-main', 'v3-develop', 'feature/example', 'v3/fix/example']) {
+      const run = () => validateInputs({ ...validPullRequest, repository, targetBranch });
+      if (accepted.includes(targetBranch)) assert.doesNotThrow(run);
+      else assert.throws(run, InputValidationError);
+    }
+  }
+});
+
+test('preserves custom target branches for all existing sources', () => {
+  for (const repository of ['nocobase3', 'nocobase3-pro', 'studio']) {
+    for (const targetBranch of ['main', 'develop', 'release/test', 'feature/example']) {
+      assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository, targetBranch }));
+    }
+  }
 });

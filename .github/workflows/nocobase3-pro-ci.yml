@@ -74,12 +74,7 @@ jobs:
         working-directory: pro
         env:
           TARGET_BRANCH: ${{ inputs.target_branch }}
-        run: |
-          TRACKED_BRANCH=develop
-          if [ "$TARGET_BRANCH" = 'main' ]; then
-            TRACKED_BRANCH=main
-          fi
-          node ./scripts/pin-submodule.mjs --check --branch "$TRACKED_BRANCH"
+        run: node "$GITHUB_WORKSPACE/.github/nocobase3/check-framework-pointer.mjs"
 
       - name: Verify the catalog mirrors the submodule
         working-directory: pro
@@ -420,7 +415,9 @@ jobs:
 
       - name: Check the submodule tracks the stable line
         working-directory: pro
-        run: node ./scripts/pin-submodule.mjs --check --branch main
+        env:
+          TARGET_BRANCH: main
+        run: node "$GITHUB_WORKSPACE/.github/nocobase3/check-framework-pointer.mjs"
 
       - name: Check for prerelease versions
         working-directory: pro

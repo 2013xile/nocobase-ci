@@ -23,9 +23,10 @@ const inputNames = (source) => [
     .matchAll(/^      ([a-z_]+):$/gmu),
 ].map((match) => match[1]);
 
-test('takes the same dispatch inputs as Pro and names its runs nocobase3-preview', () => {
+test('keeps the legacy dispatch fields and adds a defaulted OSS source selector', () => {
   assert.match(workflow, /^run-name: nocobase3-preview:\$\{\{ inputs\.request_id \}\}$/mu);
-  assert.deepEqual(inputNames(workflow), inputNames(proWorkflow));
+  assert.deepEqual(inputNames(workflow), ['source_repository', ...inputNames(proWorkflow)]);
+  assert.ok(workflow.includes('        options:\n          - nocobase3\n          - nocobase\n        default: nocobase3'));
 });
 
 test('has the two jobs nocobase-bot mirrors, for pull requests only', () => {
@@ -37,7 +38,7 @@ test('has the two jobs nocobase-bot mirrors, for pull requests only', () => {
   for (const id of jobIds) {
     assert.match(job(id), /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u, id);
     assert.doesNotMatch(job(id), /\n    needs:/u, id);
-    assert.match(job(id), /REPOSITORY: nocobase\/nocobase3\n/u, id);
+    assert.ok(job(id).includes("REPOSITORY: nocobase/${{ inputs.source_repository || 'nocobase3' }}"), id);
   }
 });
 
@@ -46,9 +47,10 @@ test('checks out the pull request head, and Studio only at a fixed main, through
     [...job(id).matchAll(/uses: \.\/\.github\/nocobase3\/checkout\n        with:\n          repository: (.+)\n          path: (.+)\n/gu)].map(
       (match) => match.slice(1),
     );
-  assert.deepEqual(checkouts('preview'), [['nocobase3', 'nocobase3']]);
+  const repository = "${{ inputs.source_repository || 'nocobase3' }}";
+  assert.deepEqual(checkouts('preview'), [[repository, 'nocobase3']]);
   assert.deepEqual(checkouts('studio-preview'), [
-    ['nocobase3', 'nocobase3'],
+    [repository, 'nocobase3'],
     ['studio', 'studio'],
   ]);
   for (const id of jobIds) assert.equal([...job(id).matchAll(/merge-pull-request: 'false'/gu)].length, checkouts(id).length, id);
@@ -84,7 +86,7 @@ test('builds Studio as studio-ci builds it, on the pull request framework', () =
   assert.match(studio, /working-directory: studio\n        run: pnpm install --no-frozen-lockfile\n/u);
   assert.match(studio, /working-directory: studio\n        run: pnpm build --target linux-x64 --tar\n/u);
   assert.match(studio, /--file studio\/storage\/exports\/dist\.tar\.gz/u);
-  assert.match(studio, /APP_ID: nocobase3-studio-pr-\$\{\{ inputs\.pr_number \}\}/u);
+  assert.ok(studio.includes("APP_ID: ${{ inputs.source_repository == 'nocobase' && 'nocobase-v3' || 'nocobase3' }}-studio-pr-${{ inputs.pr_number }}"));
 });
 
 test('builds the examples template with the repository pnpm', () => {
@@ -96,12 +98,13 @@ test('builds the examples template with the repository pnpm', () => {
 });
 
 test('gives its own Studio key only to the steps that call Studio', () => {
+  assert.doesNotMatch(workflow, /NB_STUDIO_API_KEY_NOCOBASE_V3/u);
   assert.doesNotMatch(workflow, /secrets\.NB_STUDIO_API_KEY\b(?!_NOCOBASE3)/u);
   assert.doesNotMatch(workflow, /^ {6}NB_STUDIO_API_KEY:/mu);
   const steps = workflow.split(/\n(?=      - name: )/u).slice(1);
   for (const step of steps) {
     const name = step.match(/- name: (.+)/u)[1];
-    const usesKey = step.includes('secrets.NB_STUDIO_API_KEY_NOCOBASE3');
+    const usesKey = step.includes("secrets.NB_STUDIO_API_KEY_NOCOBASE3");
     const callsStudio = /nb-studio|NB_STUDIO_SERVER/u.test(step.slice(step.indexOf('run:') === -1 ? step.length : step.indexOf('run:')));
     assert.equal(usesKey, callsStudio, name);
   }
@@ -115,6 +118,6 @@ test('names the repository and the commit in every call to Studio', () => {
   for (const call of calls.filter((call) => !call.startsWith('nb-studio app ensure'))) {
     assert.match(call, /--sha "\$HEAD_SHA"/u, call);
   }
-  assert.match(workflow, /APP_ID: nocobase3-pr-\$\{\{ inputs\.pr_number \}\}/u);
+  assert.ok(workflow.includes("APP_ID: ${{ inputs.source_repository == 'nocobase' && 'nocobase-v3' || 'nocobase3' }}-pr-${{ inputs.pr_number }}"));
   assert.match(workflow, /ENVIRONMENT: preview/u);
 });
