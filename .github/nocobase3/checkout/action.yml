@@ -3,7 +3,7 @@ description: Validate a forwarded CI dispatch, check out its immutable commits, 
 
 inputs:
   repository:
-    description: The source repository under nocobase (nocobase3-pro, studio, nocobase3 or nocobase on v3 branches).
+    description: The source repository under nocobase (nocobase3-pro, studio, nocobase3, or nocobase on its v3 branches).
     default: nocobase3-pro
   path:
     description: The directory the source is checked out into.
@@ -38,6 +38,9 @@ inputs:
   merge-pull-request:
     description: Create and check out a local merge commit from base_sha and head_sha.
     default: 'true'
+  partial-history:
+    description: Fetch only the history of head_sha and base_sha, without file contents, instead of every branch and tag.
+    default: 'false'
 
 runs:
   using: composite
@@ -74,10 +77,29 @@ runs:
         ref: ${{ inputs.head-sha }}
         token: ${{ steps.app-token.outputs.token }}
         persist-credentials: false
-        fetch-depth: 0
+        fetch-depth: ${{ inputs.partial-history == 'true' && 1 || 0 }}
         submodules: recursive
         path: ${{ inputs.path }}
         show-progress: false
+
+    # A large repository, such as nocobase/nocobase with its unrelated v2 history, is cloned at the head alone, then
+    # given the commits and trees behind head_sha and base_sha (no blobs), enough for a merge base and a changed-file
+    # list.
+    - name: Fetch the history of the fixed commits
+      if: ${{ inputs.partial-history == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+      run: |
+        commits=("$HEAD_SHA")
+        if [ "$EVENT_NAME" = 'pull_request' ]; then commits+=("$BASE_SHA"); fi
+        auth=$(printf 'x-access-token:%s' "$APP_TOKEN" | base64 | tr -d '\n')
+        git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+          fetch --quiet --no-tags --filter=blob:none --unshallow origin "${commits[@]}"
 
     - name: Prepare the immutable source snapshot
       shell: bash

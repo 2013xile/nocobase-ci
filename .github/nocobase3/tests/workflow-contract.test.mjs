@@ -92,6 +92,17 @@ test('keeps source access read-only and revokes the token before source code run
   assert.doesNotMatch(workflow, /NPM_TOKEN|FEISHU|deploy/u);
 });
 
+test('fetches only the fixed commits\' history, without blobs, when asked for partial history', () => {
+  assert.match(checkout, /fetch-depth: \$\{\{ inputs\.partial-history == 'true' && 1 \|\| 0 \}\}/u);
+  const fetch = checkout.slice(checkout.indexOf('    - name: Fetch the history of the fixed commits'));
+  assert.match(fetch, /^      if: \$\{\{ inputs\.partial-history == 'true' \}\}$/mu);
+  assert.match(fetch, /fetch --quiet --no-tags --filter=blob:none --unshallow origin "\$\{commits\[@\]\}"/u);
+  assert.ok(
+    checkout.indexOf('    - name: Fetch the history of the fixed commits') <
+      checkout.indexOf('    - name: Prepare the immutable source snapshot'),
+  );
+});
+
 test('does not cache or upload source, packages, logs, or diagnostics', () => {
   const ciSource = `${workflow}\n${checkout}\n${smoke}`;
   assert.doesNotMatch(ciSource, /actions\/(?:upload|download)-artifact/u);
