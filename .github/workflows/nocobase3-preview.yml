@@ -1,21 +1,20 @@
 name: NocoBase 3 preview
 run-name: nocobase3-preview:${{ inputs.request_id }}
 
-# Previews of nocobase/nocobase3 pull requests in NocoBase Studio, dispatched by nocobase-bot (docs/ci-forwarding.md
-# there), which mirrors the jobs below as the check runs `Preview` and `Studio preview` on nocobase/nocobase3; the job
-# names are that protocol. nocobase3's own CI stays in its repository. The two jobs run in parallel:
-#
-# - `Preview` builds the examples application template (packages/templates/app-template-examples) from the pull
-#   request's head and deploys it to its own App `nocobase3-pr-<n>` in Studio's `preview` environment, as
-#   studio-ci.yml's `Preview` does for nocobase/studio.
-# - `Studio preview` builds Studio's main on the pull request's head and deploys it to `nocobase3-studio-pr-<n>`.
-#
-# The bot forwards only pull requests from branches of nocobase/nocobase3 itself, never from forks: the build runs the
-# pull request's code on the runner that later holds the Studio key.
+# The bot mirrors Preview and Studio preview onto the selected OSS repository.
+# Keep the legacy dispatch contract by default; nocobase accepts only v3 target branches.
+# The bot keeps its existing same-repository PR forwarding policy (never forks).
 
 on:
   workflow_dispatch:
     inputs:
+      source_repository:
+        description: OSS repository under nocobase; nocobase requires a v3 target branch.
+        type: choice
+        options:
+          - nocobase3
+          - nocobase
+        default: nocobase3
       request_id:
         description: UUID shared with the source-repository check runs.
         required: true
@@ -49,7 +48,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nocobase3-preview-${{ inputs.request_id }}
+  group: nocobase3-preview-${{ inputs.source_repository || 'nocobase3' }}-${{ inputs.request_id }}
   cancel-in-progress: false
 
 jobs:
@@ -64,9 +63,9 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
-      REPOSITORY: nocobase/nocobase3
+      REPOSITORY: nocobase/${{ inputs.source_repository || 'nocobase3' }}
       HEAD_SHA: ${{ inputs.head_sha }}
-      APP_ID: nocobase3-pr-${{ inputs.pr_number }}
+      APP_ID: ${{ inputs.source_repository == 'nocobase' && 'nocobase-v3' || 'nocobase3' }}-pr-${{ inputs.pr_number }}
       ENVIRONMENT: preview
       TEMPLATE: packages/templates/app-template-examples
       LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -81,7 +80,7 @@ jobs:
       - name: Check out fixed pull request head
         uses: ./.github/nocobase3/checkout
         with:
-          repository: nocobase3
+          repository: ${{ inputs.source_repository || 'nocobase3' }}
           path: nocobase3
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
@@ -104,7 +103,7 @@ jobs:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase3
+          repositories: ${{ inputs.source_repository || 'nocobase3' }}
           permission-pull-requests: read
 
       - name: Decide whether to preview
@@ -211,9 +210,9 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=6144
       NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
-      REPOSITORY: nocobase/nocobase3
+      REPOSITORY: nocobase/${{ inputs.source_repository || 'nocobase3' }}
       HEAD_SHA: ${{ inputs.head_sha }}
-      APP_ID: nocobase3-studio-pr-${{ inputs.pr_number }}
+      APP_ID: ${{ inputs.source_repository == 'nocobase' && 'nocobase-v3' || 'nocobase3' }}-studio-pr-${{ inputs.pr_number }}
       ENVIRONMENT: preview
       LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
@@ -226,7 +225,7 @@ jobs:
       - name: Check out fixed pull request head
         uses: ./.github/nocobase3/checkout
         with:
-          repository: nocobase3
+          repository: ${{ inputs.source_repository || 'nocobase3' }}
           path: nocobase3
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
@@ -247,7 +246,7 @@ jobs:
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
           owner: nocobase
-          repositories: nocobase3
+          repositories: ${{ inputs.source_repository || 'nocobase3' }}
           permission-pull-requests: read
 
       - name: Decide whether to preview

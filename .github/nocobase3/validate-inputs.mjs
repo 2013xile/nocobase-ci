@@ -4,7 +4,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const SHA_PATTERN = /^[0-9a-f]{40}$/iu;
 const ZERO_SHA = '0'.repeat(40);
 // The repositories nocobase-bot forwards; the checkout token is limited to the one named.
-export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3'];
+export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase'];
+export const OSS_TARGET_BRANCHES = {
+  nocobase: ['v3-develop', 'v3-main'],
+};
 
 export class InputValidationError extends Error {
   constructor(message) {
@@ -47,6 +50,10 @@ export function validateInputs(input) {
   }
   if (!['true', 'false'].includes(input.skipLabel)) {
     reject('skip_label must be true or false.');
+  }
+  const targets = OSS_TARGET_BRANCHES[input.repository];
+  if (targets && !targets.includes(input.targetBranch)) {
+    reject(`target_branch for ${input.repository} must be one of ${targets.join(', ')}.`);
   }
 
   if (input.eventName === 'pull_request') {

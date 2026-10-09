@@ -3,7 +3,7 @@ description: Validate a forwarded CI dispatch, check out its immutable commits, 
 
 inputs:
   repository:
-    description: The source repository under nocobase, one of the forwarded repositories (nocobase3-pro, studio or nocobase3).
+    description: The source repository under nocobase (nocobase3-pro, studio, nocobase3 or nocobase on v3 branches).
     default: nocobase3-pro
   path:
     description: The directory the source is checked out into.
