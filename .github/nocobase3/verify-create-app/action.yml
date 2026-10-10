@@ -24,7 +24,7 @@ runs:
           import { readPublishableWorkspacePackages } from "./scripts/smoke-registry-config.mjs";
           const packages = readPublishableWorkspacePackages(process.cwd());
           const names = new Set(packages.map((pkg) => pkg.name));
-          for (const required of ["@nocobase/create-app", "@nocobase/app-template-default", "@nocobase/app-plugin-mail"]) {
+          for (const required of ["@nocobase/create-app", "@nocobase/app-template-default"]) {
             if (!names.has(required)) throw new Error(`Missing required smoke package ${required}`);
           }
           for (const excluded of ["@nocobase/app-template-examples", "@nocobase/app-template-hub"]) {
@@ -158,7 +158,11 @@ runs:
 
         CREATE_APP_VERSION=$(node -p "require('./vendor/nocobase3/packages/tools/create-app/package.json').version")
         TEMPLATE_VERSION=$(node -p "require('./vendor/nocobase3/packages/templates/app-template-default/package.json').version")
-        # Mail is moving upstream; old pinned Pro revisions still own it locally.
+        # Which Pro plugins to install, and their versions, come from Pro's own checkout (scripts/smoke-pro-plugins.mjs),
+        # so a new commercial plugin needs no change here.
+        #
+        # Transitional: Pro revisions before nocobase/nocobase3-pro#69 still require --mail-version; later ones accept and
+        # ignore it. Remove these lines once no open Pro branch predates that change.
         MAIL_MANIFEST=./vendor/nocobase3/packages/plugins/app-plugin-mail/package.json
         if [ ! -f "$MAIL_MANIFEST" ]; then
           MAIL_MANIFEST=./packages/plugins/app-plugin-mail/package.json
