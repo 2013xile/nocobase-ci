@@ -97,6 +97,9 @@ test('runs the Studio jobs only when the pull request changes Studio or what it 
   }
   assert.match(scope, /git -C nocobase3 diff --name-only "\$base" "\$HEAD_SHA" \| grep -qE "\$STUDIO_PATHS"/u);
   assert.match(scope, /\[ "\$SKIP_LABEL" = 'true' \]/u);
+  // Only agent runs get a Studio preview; the checks run for every pull request that changes Studio.
+  assert.match(scope, /--jq \.head\.ref\)/u);
+  assert.match(scope, /grep -qE '\^agent\/PM-\[0-9\]\+\$'/u);
   assert.match(scope, /grep -qx 'no-preview'/u);
   assert.match(scope, /studio: \$\{\{ steps\.scope\.outputs\.studio \}\}\n      preview: \$\{\{ steps\.scope\.outputs\.preview \}\}\n/u);
 });

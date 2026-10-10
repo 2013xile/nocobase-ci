@@ -7,9 +7,9 @@ run-name: nocobase3-preview:${{ inputs.request_id }}
 # run the pull request's code next to the Studio key.
 #
 # - `Preview`: the examples template, deployed to `nocobase-v3-pr-<n>`, for `agent/PM-<n>` branches only.
-# - `Studio preview`, `Studio e2e`, `CLI reference` and `Studio dist`: NocoBase Studio (packages/apps/studio), when the
-#   pull request changes Studio or what it is built from (`Scope` decides). The preview deploys to
-#   `nocobase-v3-studio-pr-<n>`; the e2e job uploads screenshots and traces only on failure, kept for three days; the
+# - `Studio e2e`, `CLI reference` and `Studio dist`: NocoBase Studio (packages/apps/studio), when the pull request
+#   changes Studio or what it is built from (`Scope` decides); `Studio preview` too, for `agent/PM-<n>` branches only,
+#   deployed to `nocobase-v3-studio-pr-<n>`; the e2e job uploads screenshots and traces only on failure, kept for three days; the
 #   dist job keeps the `nb-studio` and `nocobase-runner` tarballs as artifacts for three days.
 
 on:
@@ -269,7 +269,13 @@ jobs:
           if git -C nocobase3 diff --name-only "$base" "$HEAD_SHA" | grep -qE "$STUDIO_PATHS"; then
             studio=true
           fi
+          # A preview deploys an App, so only Studio's own agent runs (`agent/PM-<n>`) get one; the checks run for every
+          # pull request that changes Studio.
           preview=$studio
+          head_ref=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq .head.ref)
+          if ! printf '%s' "$head_ref" | grep -qE '^agent/PM-[0-9]+$'; then
+            preview=false
+          fi
           if [ "$SKIP_LABEL" = 'true' ] || gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qx 'no-preview'; then
             preview=false
           fi
@@ -278,7 +284,7 @@ jobs:
           {
             echo '### Scope'
             echo "- Studio jobs: $studio"
-            echo "- Studio preview: $preview"
+            echo "- Studio preview: $preview (head branch \`$head_ref\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Studio built from the pull request's own packages/apps/studio and deployed to its own App
