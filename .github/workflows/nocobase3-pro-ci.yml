@@ -233,10 +233,6 @@ jobs:
         working-directory: pro
         run: pnpm openapi:check
 
-      - name: Configure NocoBase dependency registry
-        if: ${{ matrix.script == 'build' }}
-        run: npm config set @nocobase:registry=https://npm.nocobase.ai
-
       - name: ${{ matrix.name }}
         working-directory: pro
         run: pnpm ${{ matrix.script }}
@@ -286,9 +282,6 @@ jobs:
       - name: Install dependencies
         working-directory: pro
         run: pnpm install --frozen-lockfile
-
-      - name: Configure NocoBase dependency registry
-        run: npm config set @nocobase:registry=https://npm.nocobase.ai
 
       - name: Verify Pro plugins with current OSS Default source
         uses: ./.github/nocobase3/verify-create-app
