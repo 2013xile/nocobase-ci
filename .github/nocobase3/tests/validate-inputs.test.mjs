@@ -73,16 +73,37 @@ test('accepts only the forwarded source repositories and a plain checkout path',
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
 });
 
-test('limits only the newly added main-repository source to v3 target branches', () => {
-  for (const [repository, accepted] of [
-    ['nocobase', ['v3-develop', 'v3-main']],
-  ]) {
-    for (const targetBranch of ['main', 'next', 'develop', 'v3-main', 'v3-develop', 'feature/example', 'v3/fix/example']) {
-      const run = () => validateInputs({ ...validPullRequest, repository, targetBranch });
-      if (accepted.includes(targetBranch)) assert.doesNotThrow(run);
-      else assert.throws(run, InputValidationError);
-    }
+test('recognizes main and single-level stacked v3 targets in the main repository', () => {
+  for (const targetBranch of ['v3-develop', 'v3-main', 'feat/v3-projects', 'fix/v3-stacked-pr-routing']) {
+    assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase', targetBranch }));
   }
+
+  for (const targetBranch of [
+    'main',
+    'next',
+    'develop',
+    'feature/example',
+    'v3/fix-example',
+    'feature/v3-',
+    'feature/v3-example/child',
+  ]) {
+    rejects(
+      { repository: 'nocobase', targetBranch },
+      'target_branch for nocobase must be one of v3-develop, v3-main or match <type>/v3-<name>.',
+    );
+  }
+
+  rejects(
+    {
+      repository: 'nocobase',
+      eventName: 'push',
+      baseSha: '0'.repeat(40),
+      targetBranch: 'feat/v3-projects',
+      prNumber: '0',
+      skipLabel: 'false',
+    },
+    'target_branch for nocobase must be one of v3-develop, v3-main or match <type>/v3-<name>.',
+  );
 });
 
 test('preserves custom target branches for all existing sources', () => {
