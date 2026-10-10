@@ -167,3 +167,12 @@ test('names the repository and the commit in every call to Studio', () => {
   assert.ok(workflow.includes('APP_ID: nocobase-v3-pr-${{ inputs.pr_number }}\n'));
   assert.match(workflow, /ENVIRONMENT: preview/u);
 });
+
+test('sets up Node.js before installing the nb-studio CLI, which carries no Node.js of its own', () => {
+  for (const id of ['preview', 'studio-preview']) {
+    const source = job(id);
+    const node = source.indexOf('      - name: Set up Node.js\n');
+    const cli = source.indexOf('      - name: Install the nb-studio CLI\n');
+    assert.ok(node !== -1 && cli !== -1 && node < cli, id);
+  }
+});

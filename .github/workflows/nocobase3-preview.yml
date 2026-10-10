@@ -144,6 +144,20 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: nocobase3/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The CLI Studio serves carries no Node.js and runs on the one set up above (Node.js 24 or newer).
       - name: Install the nb-studio CLI
         if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
@@ -164,19 +178,6 @@ jobs:
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
 
       # The pnpm version is the repository's own `packageManager`.
-      - name: Set up pnpm
-        if: ${{ steps.gate.outputs.skip != 'true' }}
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: nocobase3/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        if: ${{ steps.gate.outputs.skip != 'true' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
       - name: Install dependencies
         if: ${{ steps.gate.outputs.skip != 'true' }}
         working-directory: nocobase3
@@ -328,6 +329,19 @@ jobs:
           skip-label: ${{ inputs.skip_label }}
           merge-pull-request: 'false'
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: nocobase3/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Studio and the workspace packages it depends on, nothing else in the repository.
+      # The CLI Studio serves carries no Node.js and runs on the one set up above (Node.js 24 or newer).
       - name: Install the nb-studio CLI
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE_V3 }}
@@ -343,18 +357,6 @@ jobs:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE_V3 }}
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: nocobase3/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      # Studio and the workspace packages it depends on, nothing else in the repository.
       - name: Install dependencies
         working-directory: nocobase3
         run: pnpm install --frozen-lockfile --filter "@nocobase/studio..."
