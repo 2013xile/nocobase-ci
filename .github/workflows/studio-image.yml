@@ -1,12 +1,24 @@
 name: Studio image
-run-name: studio-image:${{ inputs.ref }}
+run-name: studio-image:${{ inputs.ref }}${{ inputs.release && ' (release)' || '' }}
 
 # Builds NocoBase Studio's production image from packages/apps/studio of the public nocobase/nocobase repository and
-# pushes it to the internal registry as `studio:<branch>` (when `ref` is a branch) and `studio:<short sha>`. The image carries the `nb-studio` and
-# `nocobase-runner` tarballs for every platform in /app/runners/dist, which Studio serves. The internal server pulls it with
-# the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
+# pushes it to the internal registry, in one of two modes:
+#
+# - Internal (`release: false`, the default): any branch, tag or commit. The universal `nb-studio` and `nocobase-runner`
+#   packages, which carry no Node.js, are built from the same commit into runners-dist/ and baked into
+#   /app/runners/dist, so Studio serves the CLI and runner it was built with. Studio's and the runner's versions are
+#   first stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners
+#   and CLIs see the build as newer and upgrade. Tagged `dev-<short sha>` and the moving `dev`.
+# - Release (`release: true`): the commit a v3 release published, normally its `release-beta/<batch>` tag. Versions are
+#   left as released and no runners-dist/ is built, so Studio answers npm with the versions it was built with. Tagged
+#   with the `@nocobase/studio` version in packages/apps/studio/package.json at that ref and the moving `beta`, or
+#   `latest` when the version has no prerelease part. nocobase/nocobase's v3-release-beta.yml dispatches this mode after it
+#   publishes `@nocobase/studio` to npm.
+#
+# The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
 #
 #   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=v3-develop
+#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=release-beta/2026-10-10.1 -f release=true
 
 on:
   workflow_dispatch:
@@ -16,12 +28,17 @@ on:
         required: true
         default: v3-develop
         type: string
+      release:
+        description: Build a release image tagged with the Studio version, without baked runner packages.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: studio-image-${{ inputs.ref }}
+  group: studio-image-${{ inputs.ref }}-${{ inputs.release }}
   cancel-in-progress: true
 
 jobs:
@@ -42,22 +59,35 @@ jobs:
           persist-credentials: false
           show-progress: false
 
+      # Internal: dev-<short sha> and dev. Release: the Studio version and beta, or latest for a stable version.
       - name: Name the tags
         id: tags
         env:
           REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
           REF: ${{ inputs.ref }}
+          RELEASE: ${{ inputs.release }}
         run: |
           image="${REGISTRY}/nocobase/studio"
           sha=$(git rev-parse --short=7 HEAD)
+          if [ "$RELEASE" = "true" ]; then
+            manifest=packages/apps/studio/package.json
+            version=$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)
+            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::$REF has no valid version in $manifest (found '${version}'), so a release image cannot be tagged."
+              exit 1
+            fi
+            case "$version" in
+              *-*) channel=beta ;;
+              *) channel=latest ;;
+            esac
+            tags=$(printf '%s:%s\n%s:%s' "$image" "$version" "$image" "$channel")
+          else
+            tags=$(printf '%s:dev-%s\n%s:dev' "$image" "$sha" "$image")
+          fi
           {
             echo "sha=${sha}"
             echo "tags<<EOF"
-            echo "${image}:${sha}"
-            # A commit is tagged by its sha alone; a branch or tag also by its name.
-            if [ "$(git rev-parse --short=7 "$REF" 2>/dev/null || true)" != "${REF::7}" ]; then
-              echo "${image}:$(printf '%s' "$REF" | tr -c 'A-Za-z0-9_.-' '-')"
-            fi
+            echo "$tags"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -77,6 +107,37 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --filter "@nocobase/studio..."
 
+      # Internal images only: give nb-studio (Studio's version) and nocobase-runner a dev version, so runners and CLIs
+      # see the build as newer than the release it is based on and upgrade. 1.0.0-beta.51 becomes
+      # 1.0.0-beta.51.dev.<UTC YYYYMMDDHHMMSS>, which sorts above it and below 1.0.0-beta.52; a version without a
+      # prerelease part takes -dev.<timestamp>. The checkout is changed, never the repository.
+      - name: Stamp dev versions
+        id: stamp
+        if: ${{ !inputs.release }}
+        run: |
+          stamp=$(date -u +%Y%m%d%H%M%S)
+          stamped=
+          for manifest in packages/apps/studio/package.json packages/app/agent-runner/package.json; do
+            version=$(jq -r '.version // empty' "$manifest")
+            if [ -z "$version" ]; then
+              echo "::error::$manifest has no version to stamp."
+              exit 1
+            fi
+            case "$version" in
+              *-*) dev="${version}.dev.${stamp}" ;;
+              *) dev="${version}-dev.${stamp}" ;;
+            esac
+            jq --arg version "$dev" '.version = $version' "$manifest" > "$manifest.stamped"
+            mv "$manifest.stamped" "$manifest"
+            stamped="${stamped}$(jq -r '.name' "$manifest")@${dev}"$'\n'
+          done
+          printf '%s' "$stamped"
+          {
+            echo "versions<<EOF"
+            printf '%s' "$stamped"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build the workspace packages Studio depends on
         run: pnpm --filter "@nocobase/studio^..." build
 
@@ -87,14 +148,17 @@ jobs:
           NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD: '1'
         run: pnpm build --target linux-x64
 
-      # The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as stable/<product>/... .
-      - name: Build the nb-studio tarballs
+      # Internal images only. The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as
+      # stable/<product>/...; a release image has none and Studio answers npm with the versions it was built with.
+      - name: Build the universal nb-studio package
+        if: ${{ !inputs.release }}
         working-directory: packages/apps/studio
-        run: pnpm nocobase cli build --out runners-dist
+        run: pnpm nocobase cli build --universal --out runners-dist
 
-      - name: Build the nocobase-runner tarballs
+      - name: Build the universal nocobase-runner package
+        if: ${{ !inputs.release }}
         working-directory: packages/apps/studio
-        run: pnpm nocobase cli build --runner --out runners-dist
+        run: pnpm nocobase cli build --runner --universal --out runners-dist
 
       - name: Sign in to the registry
         uses: docker/login-action@v3
@@ -120,9 +184,21 @@ jobs:
       - name: Summary
         env:
           TAGS: ${{ steps.tags.outputs.tags }}
+          REF: ${{ inputs.ref }}
+          SHA: ${{ steps.tags.outputs.sha }}
+          MODE: ${{ inputs.release && 'release, no runner packages' || 'internal, universal runner packages baked in' }}
+          VERSIONS: ${{ steps.stamp.outputs.versions }}
         run: |
           {
             echo '### Studio image'
             echo
+            echo "Built \`${REF}\` (\`${SHA}\`), ${MODE}."
+            echo
             printf '%s\n' "$TAGS" | sed 's/^.*\//- `/; s/$/`/'
+            if [ -n "$VERSIONS" ]; then
+              echo
+              echo 'Stamped versions:'
+              echo
+              printf '%s\n' "$VERSIONS" | sed '/^$/d; s/^/- `/; s/$/`/'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

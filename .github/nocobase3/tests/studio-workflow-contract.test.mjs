@@ -87,11 +87,3 @@ test('uploads only failed e2e results and the public tarballs, briefly, and cach
   assert.ok(dist.every(([upload]) => /path: studio\/output\/dist\/stable\/(nb-studio|nocobase-runner)\n/u.test(upload)));
   assert.equal(e2e.length + dist.length, uploads.length);
 });
-
-test('bakes the tarballs into the Studio image', () => {
-  const image = readFileSync(path.join(root, '.github/workflows/studio-image.yml'), 'utf8');
-  const build = image.indexOf('cli build --out runners-dist');
-  const runner = image.indexOf('cli build --runner --out runners-dist');
-  const docker = image.indexOf('docker/build-push-action');
-  assert.ok(build > 0 && runner > 0 && build < docker && runner < docker);
-});

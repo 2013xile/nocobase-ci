@@ -19,8 +19,15 @@ Logs are public by design, but the workflow does not upload source, packages, lo
 `studio-ci.yml` runs the CI of the private `nocobase/studio` repository the same way: `nocobase-bot` dispatches it with the same seven inputs, its run name is `studio-ci:<request_id>`, and it checks out the immutable commits through the shared `checkout` action with `repository: studio`, which limits the read-only token to that repository. Its job names are the check names on `nocobase/studio`: `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document` and `CLI reference` for every request, `Studio e2e` and `Preview` for pull requests, and `Dist` for pushes to `main`.
 
 - `Preview` builds the pull request's head (not a merge) and deploys it to the App `studio-pr-<n>` in Studio's `preview` environment, as Studio's standard preview workflow does, naming `--repository nocobase/studio` and `--sha <head_sha>` in every call. It needs the secret `NB_STUDIO_API_KEY` and the variable `NB_STUDIO_URL`; the key is given only to the steps that call Studio, never to the build.
-- `Dist` builds the `nb-studio` and `nocobase-runner` tarballs as a check and keeps them as artifacts for three days; both are public. They are not delivered anywhere: `studio-image.yml` builds them into `runners-dist/` before `docker build`, and Studio's `Dockerfile` bakes them into `/app/runners/dist`, which the image serves.
+- `Dist` builds the `nb-studio` and `nocobase-runner` tarballs as a check and keeps them as artifacts for three days; both are public. They are not delivered anywhere.
 - Nothing is cached, and no source or application build is uploaded. Besides the tarballs, `Studio e2e` uploads its screenshots and Playwright traces only when it fails, kept for three days.
+
+## NocoBase Studio image
+
+`studio-image.yml` builds Studio's production image from `packages/apps/studio` in `nocobase/nocobase` and pushes it to the internal registry, dispatched with `ref` and a `release` switch.
+
+- Internal (`release: false`, the default, for manual runs): any branch, tag or commit. Studio's and `@nocobase/agent-runner`'s versions are stamped in the checkout to `<version>.dev.<UTC YYYYMMDDHHMMSS>` (`<version>-dev.<timestamp>` without a prerelease part) so runners and CLIs see the build as newer and upgrade; then the universal `nb-studio` and `nocobase-runner` packages (`cli build --universal`, no bundled Node.js) are built into `runners-dist/`, which the `Dockerfile` bakes into `/app/runners/dist`. Tagged `dev-<short sha>` and `dev`.
+- Release (`release: true`): dispatched by `nocobase/nocobase`'s `v3-release-beta.yml` with the release's `release-beta/<batch>` tag once `@nocobase/studio` is published. Nothing is stamped and no `runners-dist/` is built, so Studio answers npm with the versions it was built with. Tagged with the `@nocobase/studio` version at that ref and `beta`, or `latest` for a version without a prerelease part; a ref without a valid version fails.
 
 ## NocoBase 3 preview relay
 
@@ -57,5 +64,5 @@ node --test .github/nocobase3/tests/*.test.mjs
 Lint the workflows with:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/studio-image.yml
 ```
