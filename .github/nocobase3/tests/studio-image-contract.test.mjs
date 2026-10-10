@@ -65,7 +65,11 @@ const image = 'registry.example.com/nocobase/studio';
 // Runs the stamp step against manifests at `versions` and returns what it wrote and reported.
 function stampVersions(versions) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-stamp-'));
-  const manifests = { '@nocobase/studio': 'packages/apps/studio', '@nocobase/agent-runner': 'packages/app/agent-runner' };
+  const manifests = {
+    '@nocobase/studio': 'packages/apps/studio',
+    '@nocobase/studio-cli': 'packages/tools/studio-cli',
+    '@nocobase/agent-runner': 'packages/app/agent-runner',
+  };
   try {
     for (const [name, directory] of Object.entries(manifests)) {
       mkdirSync(path.join(dir, directory), { recursive: true });
@@ -109,15 +113,11 @@ test('tags an internal image dev-<short sha> and dev', () => {
   assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`]);
 });
 
-test('bakes the universal packages into the image', () => {
-  const docker = workflow.indexOf('docker/build-push-action');
-  const builds = [...workflow.matchAll(/run: pnpm nocobase cli build (.+)$/gmu)].map((match) => match[1]);
-  assert.deepEqual(builds, ['--universal --out runners-dist', '--runner --universal --out runners-dist']);
-  for (const name of ['Build the universal nb-studio package', 'Build the universal nocobase-runner package']) {
-    assert.doesNotMatch(step(name), /        if:/u, name);
-    assert.ok(workflow.indexOf(step(name)) < docker, name);
-  }
-  assert.doesNotMatch(workflow, /--targets|--host-node/u);
+test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
+  // `pnpm build` packs nb-studio and the runner into dist/runners; nothing builds or copies them separately.
+  assert.doesNotMatch(workflow, /cli build|runners-dist/u);
+  assert.match(step('Build dist for linux-x64'), /run: pnpm build --target linux-x64\n/u);
+  assert.match(step('Build and push'), /build-args: DIST=prebuilt\n/u);
 });
 
 test('pushes the image and lists the tags in the summary', () => {
@@ -129,35 +129,40 @@ test('pushes the image and lists the tags in the summary', () => {
   assert.match(step('Summary'), /GITHUB_STEP_SUMMARY/u);
 });
 
-test('stamps dev versions on Studio and the runner before anything is built', () => {
+test('stamps dev versions on Studio, nb-studio and the runner before anything is built', () => {
   const stamp = step('Stamp dev versions');
   assert.doesNotMatch(stamp, /        if:/u);
   const at = workflow.indexOf(stamp);
   assert.ok(at > workflow.indexOf(step('Install dependencies')));
-  for (const name of [
-    'Build the workspace packages Studio depends on',
-    'Build dist for linux-x64',
-    'Build the universal nb-studio package',
-    'Build the universal nocobase-runner package',
-  ]) {
+  for (const name of ['Build the workspace packages Studio depends on', 'Build dist for linux-x64']) {
     assert.ok(at < workflow.indexOf(step(name)), name);
   }
 });
 
 test('appends .dev.<UTC timestamp> to a prerelease and -dev.<timestamp> to a plain version', () => {
-  const { status, written, reported } = stampVersions({ '@nocobase/studio': '1.0.0-beta.51', '@nocobase/agent-runner': '0.1.0' });
+  const { status, written, reported } = stampVersions({
+    '@nocobase/studio': '1.0.0-beta.51',
+    '@nocobase/studio-cli': '0.1.0-beta.2',
+    '@nocobase/agent-runner': '0.1.0',
+  });
   assert.equal(status, 0);
   const studio = written['@nocobase/studio'].version;
+  const cli = written['@nocobase/studio-cli'].version;
   const runner = written['@nocobase/agent-runner'].version;
   const match = /^1\.0\.0-beta\.51\.dev\.(\d{14})$/u.exec(studio);
   assert.ok(match, studio);
+  assert.equal(cli, `0.1.0-beta.2.dev.${match[1]}`);
   assert.equal(runner, `0.1.0-dev.${match[1]}`);
-  assert.deepEqual(reported, [`@nocobase/studio@${studio}`, `@nocobase/agent-runner@${runner}`]);
+  assert.deepEqual(reported, [`@nocobase/studio@${studio}`, `@nocobase/studio-cli@${cli}`, `@nocobase/agent-runner@${runner}`]);
   assert.equal(written['@nocobase/studio'].private, false, 'other manifest fields are kept');
 });
 
 test('fails the stamp when a manifest has no version', () => {
-  const { status } = stampVersions({ '@nocobase/studio': undefined, '@nocobase/agent-runner': '0.1.0-beta.3' });
+  const { status } = stampVersions({
+    '@nocobase/studio': '1.0.0-beta.51',
+    '@nocobase/studio-cli': undefined,
+    '@nocobase/agent-runner': '0.1.0-beta.3',
+  });
   assert.notEqual(status, 0);
 });
 

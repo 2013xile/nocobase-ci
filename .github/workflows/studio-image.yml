@@ -2,11 +2,12 @@ name: Studio image
 run-name: studio-image:${{ inputs.ref }}
 
 # Builds NocoBase Studio's internal image from packages/apps/studio of the public nocobase/nocobase repository, from
-# any branch, tag or commit, and pushes it to the internal registry. Studio's and the runner's versions are first
-# stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners and CLIs
-# see the build as newer and upgrade; the universal `nb-studio` and `nocobase-runner` packages, which carry no Node.js,
-# are then built from the same commit into runners-dist/ and baked into /app/runners/dist, so Studio serves the CLI and
-# runner it was built with. Tagged `dev-<short sha>` and the moving `dev`.
+# any branch, tag or commit, and pushes it to the internal registry. Studio's, nb-studio's (`@nocobase/studio-cli`) and
+# the runner's versions are first stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a
+# prerelease part), so runners and CLIs see the build as newer and upgrade. Studio's own `pnpm build` then packs the
+# universal `nb-studio` and `nocobase-runner` packages, which carry no Node.js, at those versions into dist/runners,
+# which the prebuilt image carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>` and
+# the moving `dev`.
 #
 # Release images are built by nocobase/nocobase itself (`v3-studio-image.yml`, called by its beta release) and pushed
 # to the public registries.
@@ -83,8 +84,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --filter "@nocobase/studio..."
 
-      # Internal images only: give nb-studio (Studio's version) and nocobase-runner a dev version, so runners and CLIs
-      # see the build as newer than the release it is based on and upgrade. 1.0.0-beta.51 becomes
+      # Internal images only: give Studio, nb-studio (@nocobase/studio-cli's version) and nocobase-runner a dev
+      # version, so runners and CLIs see the build as newer than the release it is based on and upgrade. Before
+      # `pnpm build`, which records these versions and packs nb-studio and the runner at them. 1.0.0-beta.51 becomes
       # 1.0.0-beta.51.dev.<UTC YYYYMMDDHHMMSS>, which sorts above it and below 1.0.0-beta.52; a version without a
       # prerelease part takes -dev.<timestamp>. The checkout is changed, never the repository.
       - name: Stamp dev versions
@@ -92,7 +94,7 @@ jobs:
         run: |
           stamp=$(date -u +%Y%m%d%H%M%S)
           stamped=
-          for manifest in packages/apps/studio/package.json packages/app/agent-runner/package.json; do
+          for manifest in packages/apps/studio/package.json packages/tools/studio-cli/package.json packages/app/agent-runner/package.json; do
             version=$(jq -r '.version // empty' "$manifest")
             if [ -z "$version" ]; then
               echo "::error::$manifest has no version to stamp."
@@ -116,22 +118,13 @@ jobs:
       - name: Build the workspace packages Studio depends on
         run: pnpm --filter "@nocobase/studio^..." build
 
-      # dist/ is built here, with this job's heap, and the image takes it prebuilt.
+      # dist/ is built here, with this job's heap, and the image takes it prebuilt. It includes dist/runners, the
+      # nb-studio and nocobase-runner packages Studio serves.
       - name: Build dist for linux-x64
         working-directory: packages/apps/studio
         env:
           NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD: '1'
         run: pnpm build --target linux-x64
-
-      # Internal images only. The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as
-      # stable/<product>/...; a release image has none and Studio answers npm with the versions it was built with.
-      - name: Build the universal nb-studio package
-        working-directory: packages/apps/studio
-        run: pnpm nocobase cli build --universal --out runners-dist
-
-      - name: Build the universal nocobase-runner package
-        working-directory: packages/apps/studio
-        run: pnpm nocobase cli build --runner --universal --out runners-dist
 
       - name: Sign in to the registry
         uses: docker/login-action@v3
@@ -164,7 +157,7 @@ jobs:
           {
             echo '### Studio image'
             echo
-            echo "Built \`${REF}\` (\`${SHA}\`) with the universal runner packages baked in."
+            echo "Built \`${REF}\` (\`${SHA}\`), serving the nb-studio and runner packages its build packed."
             echo
             printf '%s\n' "$TAGS" | sed 's/^.*\//- `/; s/$/`/'
             if [ -n "$VERSIONS" ]; then
