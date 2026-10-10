@@ -29,7 +29,7 @@ function script(name) {
 }
 
 // Runs the tag step in a throwaway repository whose Studio manifest has `version`.
-function nameTags({ release, version }) {
+function nameTags({ version }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-image-'));
   try {
     const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
@@ -48,8 +48,7 @@ function nameTags({ release, version }) {
       env: {
         ...process.env,
         REGISTRY: 'registry.example.com',
-        REF: 'release-beta/2026-10-10.1',
-        RELEASE: String(release),
+        REF: 'v3-develop',
         GITHUB_OUTPUT: output,
       },
     });
@@ -96,53 +95,32 @@ function stampVersions(versions) {
   }
 }
 
-test('takes the ref and a release switch that defaults to an internal build', () => {
+test('takes the ref to build, and no release mode', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /      ref:\n(?:        .+\n)*?        required: true\n(?:        .+\n)*?        type: string\n/u);
-  assert.match(inputs, /      release:\n(?:        .+\n)*?        default: false\n        type: boolean\n/u);
-  assert.match(workflow, /^run-name: studio-image:\$\{\{ inputs\.ref \}\}\$\{\{ inputs\.release && ' \(release\)' \|\| '' \}\}$/mu);
-  assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}-\$\{\{ inputs\.release \}\}/u);
+  assert.doesNotMatch(workflow, /inputs\.release|      release:/u);
+  assert.match(workflow, /^run-name: studio-image:\$\{\{ inputs\.ref \}\}$/mu);
+  assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}\n/u);
 });
 
 test('tags an internal image dev-<short sha> and dev', () => {
-  const { status, sha, tags } = nameTags({ release: false, version: '1.0.0-beta.52' });
+  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.52' });
   assert.equal(status, 0);
   assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`]);
 });
 
-test('tags a prerelease image with its Studio version and beta', () => {
-  const { status, tags } = nameTags({ release: true, version: '1.0.0-beta.52' });
-  assert.equal(status, 0);
-  assert.deepEqual(tags, [`${image}:1.0.0-beta.52`, `${image}:beta`]);
-});
-
-test('tags a stable release image with its Studio version and latest', () => {
-  const { status, tags } = nameTags({ release: true, version: '1.2.0' });
-  assert.equal(status, 0);
-  assert.deepEqual(tags, [`${image}:1.2.0`, `${image}:latest`]);
-});
-
-test('fails a release build whose ref has no Studio version', () => {
-  for (const version of [undefined, '', 'workspace']) {
-    const { status, stdout, tags } = nameTags({ release: true, version });
-    assert.notEqual(status, 0, String(version));
-    assert.match(stdout, /::error::release-beta\/2026-10-10\.1 has no valid version in packages\/apps\/studio\/package\.json/u);
-    assert.deepEqual(tags, []);
-  }
-});
-
-test('bakes the universal packages into internal images only', () => {
+test('bakes the universal packages into the image', () => {
   const docker = workflow.indexOf('docker/build-push-action');
   const builds = [...workflow.matchAll(/run: pnpm nocobase cli build (.+)$/gmu)].map((match) => match[1]);
   assert.deepEqual(builds, ['--universal --out runners-dist', '--runner --universal --out runners-dist']);
   for (const name of ['Build the universal nb-studio package', 'Build the universal nocobase-runner package']) {
-    assert.match(step(name), /        if: \$\{\{ !inputs\.release \}\}\n/u, name);
+    assert.doesNotMatch(step(name), /        if:/u, name);
     assert.ok(workflow.indexOf(step(name)) < docker, name);
   }
   assert.doesNotMatch(workflow, /--targets|--host-node/u);
 });
 
-test('builds and pushes both modes the same way and lists the tags in the summary', () => {
+test('pushes the image and lists the tags in the summary', () => {
   const push = step('Build and push');
   assert.doesNotMatch(push, /if:/u);
   assert.match(push, /build-args: DIST=prebuilt\n/u);
@@ -151,9 +129,9 @@ test('builds and pushes both modes the same way and lists the tags in the summar
   assert.match(step('Summary'), /GITHUB_STEP_SUMMARY/u);
 });
 
-test('stamps dev versions on Studio and the runner in internal builds only, before anything is built', () => {
+test('stamps dev versions on Studio and the runner before anything is built', () => {
   const stamp = step('Stamp dev versions');
-  assert.match(stamp, /        if: \$\{\{ !inputs\.release \}\}\n/u);
+  assert.doesNotMatch(stamp, /        if:/u);
   const at = workflow.indexOf(stamp);
   assert.ok(at > workflow.indexOf(step('Install dependencies')));
   for (const name of [

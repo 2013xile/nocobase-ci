@@ -1,19 +1,15 @@
 name: Studio image
-run-name: studio-image:${{ inputs.ref }}${{ inputs.release && ' (release)' || '' }}
+run-name: studio-image:${{ inputs.ref }}
 
-# Builds NocoBase Studio's production image from packages/apps/studio of the public nocobase/nocobase repository and
-# pushes it to the internal registry, in one of two modes:
+# Builds NocoBase Studio's internal image from packages/apps/studio of the public nocobase/nocobase repository, from
+# any branch, tag or commit, and pushes it to the internal registry. Studio's and the runner's versions are first
+# stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners and CLIs
+# see the build as newer and upgrade; the universal `nb-studio` and `nocobase-runner` packages, which carry no Node.js,
+# are then built from the same commit into runners-dist/ and baked into /app/runners/dist, so Studio serves the CLI and
+# runner it was built with. Tagged `dev-<short sha>` and the moving `dev`.
 #
-# - Internal (`release: false`, the default): any branch, tag or commit. The universal `nb-studio` and `nocobase-runner`
-#   packages, which carry no Node.js, are built from the same commit into runners-dist/ and baked into
-#   /app/runners/dist, so Studio serves the CLI and runner it was built with. Studio's and the runner's versions are
-#   first stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners
-#   and CLIs see the build as newer and upgrade. Tagged `dev-<short sha>` and the moving `dev`.
-# - Release (`release: true`): the commit a v3 release published, normally its `release-beta/<batch>` tag. Versions are
-#   left as released and no runners-dist/ is built, so Studio answers npm with the versions it was built with. Tagged
-#   with the `@nocobase/studio` version in packages/apps/studio/package.json at that ref and the moving `beta`, or
-#   `latest` when the version has no prerelease part. nocobase/nocobase's v3-release-beta.yml dispatches this mode after it
-#   publishes `@nocobase/studio` to npm.
+# Release images are built by nocobase/nocobase itself (`v3-studio-image.yml`, called by its beta release) and pushed
+# to the public registries.
 #
 # The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
 #
@@ -28,17 +24,12 @@ on:
         required: true
         default: v3-develop
         type: string
-      release:
-        description: Build a release image tagged with the Studio version, without baked runner packages.
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: studio-image-${{ inputs.ref }}-${{ inputs.release }}
+  group: studio-image-${{ inputs.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -65,25 +56,10 @@ jobs:
         env:
           REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
           REF: ${{ inputs.ref }}
-          RELEASE: ${{ inputs.release }}
         run: |
           image="${REGISTRY}/nocobase/studio"
           sha=$(git rev-parse --short=7 HEAD)
-          if [ "$RELEASE" = "true" ]; then
-            manifest=packages/apps/studio/package.json
-            version=$(jq -r '.version // empty' "$manifest" 2>/dev/null || true)
-            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::$REF has no valid version in $manifest (found '${version}'), so a release image cannot be tagged."
-              exit 1
-            fi
-            case "$version" in
-              *-*) channel=beta ;;
-              *) channel=latest ;;
-            esac
-            tags=$(printf '%s:%s\n%s:%s' "$image" "$version" "$image" "$channel")
-          else
-            tags=$(printf '%s:dev-%s\n%s:dev' "$image" "$sha" "$image")
-          fi
+          tags=$(printf '%s:dev-%s\n%s:dev' "$image" "$sha" "$image")
           {
             echo "sha=${sha}"
             echo "tags<<EOF"
@@ -113,7 +89,6 @@ jobs:
       # prerelease part takes -dev.<timestamp>. The checkout is changed, never the repository.
       - name: Stamp dev versions
         id: stamp
-        if: ${{ !inputs.release }}
         run: |
           stamp=$(date -u +%Y%m%d%H%M%S)
           stamped=
@@ -151,12 +126,10 @@ jobs:
       # Internal images only. The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as
       # stable/<product>/...; a release image has none and Studio answers npm with the versions it was built with.
       - name: Build the universal nb-studio package
-        if: ${{ !inputs.release }}
         working-directory: packages/apps/studio
         run: pnpm nocobase cli build --universal --out runners-dist
 
       - name: Build the universal nocobase-runner package
-        if: ${{ !inputs.release }}
         working-directory: packages/apps/studio
         run: pnpm nocobase cli build --runner --universal --out runners-dist
 
@@ -186,13 +159,12 @@ jobs:
           TAGS: ${{ steps.tags.outputs.tags }}
           REF: ${{ inputs.ref }}
           SHA: ${{ steps.tags.outputs.sha }}
-          MODE: ${{ inputs.release && 'release, no runner packages' || 'internal, universal runner packages baked in' }}
           VERSIONS: ${{ steps.stamp.outputs.versions }}
         run: |
           {
             echo '### Studio image'
             echo
-            echo "Built \`${REF}\` (\`${SHA}\`), ${MODE}."
+            echo "Built \`${REF}\` (\`${SHA}\`) with the universal runner packages baked in."
             echo
             printf '%s\n' "$TAGS" | sed 's/^.*\//- `/; s/$/`/'
             if [ -n "$VERSIONS" ]; then
