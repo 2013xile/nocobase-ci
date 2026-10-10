@@ -24,7 +24,7 @@ runs:
           import { readPublishableWorkspacePackages } from "./scripts/smoke-registry-config.mjs";
           const packages = readPublishableWorkspacePackages(process.cwd());
           const names = new Set(packages.map((pkg) => pkg.name));
-          for (const required of ["@nocobase/create-app", "@nocobase/app-template-default", "@nocobase/app-plugin-mail", "@nocobase/app-plugin-ai-knowledge-base"]) {
+          for (const required of ["@nocobase/create-app", "@nocobase/app-template-default", "@nocobase/app-plugin-mail"]) {
             if (!names.has(required)) throw new Error(`Missing required smoke package ${required}`);
           }
           for (const excluded of ["@nocobase/app-template-examples", "@nocobase/app-template-hub"]) {
@@ -164,13 +164,11 @@ runs:
           MAIL_MANIFEST=./packages/plugins/app-plugin-mail/package.json
         fi
         MAIL_VERSION=$(node -p 'require(process.argv[1]).version' "$MAIL_MANIFEST")
-        AI_KNOWLEDGE_BASE_VERSION=$(node -p "require('./packages/plugins/app-plugin-ai-knowledge-base/package.json').version")
         bash ./scripts/smoke-create-app.sh \
           --registry "http://localhost:$PORT" \
           --create-app-version "$CREATE_APP_VERSION" \
           --template "@nocobase/app-template-default@$TEMPLATE_VERSION" \
           --mail-version "$MAIL_VERSION" \
-          --ai-knowledge-base-version "$AI_KNOWLEDGE_BASE_VERSION" \
           --timeout "$TIMEOUT" \
           --workdir "$RUNNER_TEMP/create-app-smoke/default-with-pro"
 

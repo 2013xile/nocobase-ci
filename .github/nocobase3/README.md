@@ -32,7 +32,7 @@ Logs are public by design, but the workflow does not upload source, packages, lo
 - Studio removes both Apps once the pull request is merged or closed: it records each App `app ensure` made as a preview of the pull request whose head was first deployed to it, and removes every preview of that pull request.
 - It needs the secret `NB_STUDIO_API_KEY_NOCOBASE_V3`, the manual CI key of `nocobase/nocobase` in Studio (`nb-studio build ci setup nocobase/nocobase --reveal`), and the variable `NB_STUDIO_URL`; the key is given only to the steps that call Studio, never to the install or the build. Nothing is cached or uploaded.
 
-The archived `nocobase/nocobase3` is no longer previewed; its Apps and its `NB_STUDIO_API_KEY_NOCOBASE3` secret were removed. `validate-inputs.mjs` still accepts `nocobase3` as a checkout source because Pro's `vendor/nocobase3` submodule points there until Pro moves it.
+The archived `nocobase/nocobase3` is no longer previewed; its Apps and its `NB_STUDIO_API_KEY_NOCOBASE3` secret were removed. `validate-inputs.mjs` still accepts `nocobase3` as a checkout source because older Pro commits' `vendor/nocobase3` submodule points there.
 
 ## Existing workflow behavior
 
@@ -46,7 +46,7 @@ The main repository's `release.yml` and `changelog-and-release.yml` tag triggers
 
 ## Moving Pro's framework submodule
 
-Pro's `vendor/nocobase3` still points at the archived `nocobase/nocobase3`, which stays readable, so `nocobase3-pro-ci.yml` keeps working unchanged. When Pro moves the submodule's URL to `nocobase/nocobase` and its gitlink onto `v3-develop`, `check-framework-pointer.mjs` maps `main` to `v3-main` and every other target to `v3-develop`; Pro's own `scripts/pin-submodule.mjs` must learn the same branch names. The shared `checkout` action then initializes the submodule from the whole of `nocobase/nocobase`, v2 history included (about 390 MB), so that move should also give the submodule a shallow or partial fetch.
+Pro's `vendor/nocobase3` now points at `nocobase/nocobase` and its gitlink is on `v3-develop`. `check-framework-pointer.mjs` maps `main` to `v3-main` and every other target to `v3-develop`, and Pro's own `scripts/pin-submodule.mjs` uses the same branch names. The archived `nocobase/nocobase3` URL is still handled by delegating to that script, for older Pro commits. The shared `checkout` action still initializes the submodule from the whole of `nocobase/nocobase`, v2 history included (about 390 MB); giving it a shallow or partial fetch is a separate follow-up, because `check-framework-pointer.mjs` needs the tracked branch's ancestry.
 
 Run the committed contract and Git fixture tests with:
 
