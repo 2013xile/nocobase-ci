@@ -1,20 +1,20 @@
 name: Studio image
 run-name: studio-image:${{ inputs.ref }}
 
-# Builds NocoBase Studio's production image from the private nocobase/studio repository and pushes it to the internal
-# registry as `studio:<branch>` (when `ref` is a branch) and `studio:<short sha>`. The image carries the `nb-studio` and
+# Builds NocoBase Studio's production image from packages/apps/studio of the public nocobase/nocobase repository and
+# pushes it to the internal registry as `studio:<branch>` (when `ref` is a branch) and `studio:<short sha>`. The image carries the `nb-studio` and
 # `nocobase-runner` tarballs for every platform in /app/runners/dist, which Studio serves. The internal server pulls it with
 # the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
 #
-#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=main
+#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=v3-develop
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or commit of nocobase/studio to build.
+        description: Branch, tag or commit of nocobase/nocobase to build.
         required: true
-        default: main
+        default: v3-develop
         type: string
 
 permissions:
@@ -33,25 +33,13 @@ jobs:
       # Studio's build typechecks it together with the framework's sources, which needs more than the default heap.
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
-      - name: Create a read-only source token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          owner: nocobase
-          repositories: studio
-          permission-contents: read
-
-      # The framework is a public submodule; only Studio itself needs the token.
-      - name: Check out Studio
+      # nocobase/nocobase is public, so the checkout needs no token.
+      - name: Check out the repository
         uses: actions/checkout@v4
         with:
-          repository: nocobase/studio
+          repository: nocobase/nocobase
           ref: ${{ inputs.ref }}
-          token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
-          submodules: true
           show-progress: false
 
       - name: Name the tags
@@ -85,18 +73,27 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Studio and the workspace packages it depends on, nothing else in the repository.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter "@nocobase/studio..."
+
+      - name: Build the workspace packages Studio depends on
+        run: pnpm --filter "@nocobase/studio^..." build
 
       # dist/ is built here, with this job's heap, and the image takes it prebuilt.
       - name: Build dist for linux-x64
+        working-directory: packages/apps/studio
+        env:
+          NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD: '1'
         run: pnpm build --target linux-x64
 
       # The Dockerfile copies runners-dist/ into /app/runners/dist, laid out as stable/<product>/... .
       - name: Build the nb-studio tarballs
+        working-directory: packages/apps/studio
         run: pnpm nocobase cli build --out runners-dist
 
       - name: Build the nocobase-runner tarballs
+        working-directory: packages/apps/studio
         run: pnpm nocobase cli build --runner --out runners-dist
 
       - name: Sign in to the registry
@@ -112,8 +109,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile
+          context: packages/apps/studio
+          file: packages/apps/studio/Dockerfile
           platforms: linux/amd64
           build-args: DIST=prebuilt
           push: true
