@@ -6,16 +6,18 @@ run-name: studio-image:${{ inputs.ref }}
 # the runner's versions are first stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a
 # prerelease part), so runners and CLIs see the build as newer and upgrade. Studio's own `pnpm build` then packs the
 # universal `nb-studio` and `nocobase-runner` packages, which carry no Node.js, at those versions into dist/runners,
-# which the prebuilt image carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>` and
-# the moving `dev`.
+# which the prebuilt image carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>` and a
+# moving tag for the branch: `main` for v3-main, `dev` for anything else.
 #
 # Release images are built by nocobase/nocobase itself (`v3-studio-image.yml`, called by its beta release) and pushed
 # to the public registries.
 #
 # The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`). Run it by hand:
 #
+# nocobase-bot dispatches it with `ref` set to the branch for every push to v3-develop and v3-main; a newer push to the
+# same branch cancels the build in progress. Run it by hand for any other ref:
+#
 #   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=v3-develop
-#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=release-beta/2026-10-10.1 -f release=true
 
 on:
   workflow_dispatch:
@@ -51,7 +53,7 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      # Internal: dev-<short sha> and dev. Release: the Studio version and beta, or latest for a stable version.
+      # dev-<short sha>, and the moving tag of the branch: main for v3-main, dev for anything else.
       - name: Name the tags
         id: tags
         env:
@@ -60,7 +62,11 @@ jobs:
         run: |
           image="${REGISTRY}/nocobase/studio"
           sha=$(git rev-parse --short=7 HEAD)
-          tags=$(printf '%s:dev-%s\n%s:dev' "$image" "$sha" "$image")
+          case "$REF" in
+            v3-main) channel=main ;;
+            *) channel=dev ;;
+          esac
+          tags=$(printf '%s:dev-%s\n%s:%s' "$image" "$sha" "$image" "$channel")
           {
             echo "sha=${sha}"
             echo "tags<<EOF"

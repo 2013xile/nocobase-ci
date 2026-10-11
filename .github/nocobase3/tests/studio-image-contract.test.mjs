@@ -29,7 +29,7 @@ function script(name) {
 }
 
 // Runs the tag step in a throwaway repository whose Studio manifest has `version`.
-function nameTags({ version }) {
+function nameTags({ version, ref = 'v3-develop' }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-image-'));
   try {
     const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
@@ -48,7 +48,7 @@ function nameTags({ version }) {
       env: {
         ...process.env,
         REGISTRY: 'registry.example.com',
-        REF: 'v3-develop',
+        REF: ref,
         GITHUB_OUTPUT: output,
       },
     });
@@ -108,9 +108,17 @@ test('takes the ref to build, and no release mode', () => {
 });
 
 test('tags an internal image dev-<short sha> and dev', () => {
-  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.52' });
+  for (const ref of ['v3-develop', 'feat/v3-anything', '0123abc']) {
+    const { status, sha, tags } = nameTags({ version: '1.0.0-beta.52', ref });
+    assert.equal(status, 0);
+    assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`], ref);
+  }
+});
+
+test('gives v3-main its own moving tag, so it never replaces dev', () => {
+  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.52', ref: 'v3-main' });
   assert.equal(status, 0);
-  assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`]);
+  assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:main`]);
 });
 
 test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
