@@ -124,9 +124,7 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
     'CLI reference': 'pnpm cli-reference:check',
   });
   assert.match(job('check'), /run: \$\{\{ matrix\.run \}\}\n/u);
-  assert.match(job('submodule'), /HEAD_REF: \$\{\{ inputs\.head_ref \}\}\n/u);
-  assert.match(job('submodule'), /GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/u);
-  assert.match(job('submodule'), /run: node scripts\/check-submodule\.mjs --head-branch "\$HEAD_REF"\n/u);
+  assert.match(job('submodule'), /working-directory: studio\n        run: node scripts\/check-submodule\.mjs\n/u);
 });
 
 test('builds Studio before its browser tests and keeps both suites apart', () => {
@@ -155,5 +153,23 @@ test('builds every pull request job on the same-name framework branch when there
     assert.ok(step < source.indexOf('      - name: Install dependencies\n'), id);
   }
   assert.match(job('preview'), /- name: Choose the framework\n        id: framework\n        if: \$\{\{ steps\.gate\.outputs\.skip != 'true' \}\}\n/u);
-  for (const id of ['submodule', 'dist']) assert.doesNotMatch(job(id), /studio-framework/u, id);
+  for (const id of ['submodule', 'dist']) assert.doesNotMatch(job(id), /studio-framework\n/u, id);
+});
+
+test("gates the framework half in a trusted step, before the pull request's own script, which gets no token", () => {
+  const source = job('submodule');
+  const gate = source.indexOf('      - name: Check the framework half has merged\n');
+  const script = source.indexOf('      - name: Check vendor/nocobase3 is reachable from a public branch or tag\n');
+  assert.ok(gate !== -1 && script !== -1 && gate < script);
+  assert.ok(source.indexOf('uses: ./.github/nocobase3/checkout') < gate);
+  assert.match(
+    source.slice(gate, script),
+    /uses: \.\/\.github\/nocobase3\/studio-framework-gate\n        with:\n          head-ref: \$\{\{ inputs\.head_ref \}\}\n          github-token: \$\{\{ github\.token \}\}\n/u,
+  );
+  // The pull request's own code never sees a token, in any job.
+  const ownCode = source.slice(script);
+  assert.doesNotMatch(ownCode, /token|GITHUB_TOKEN|GH_TOKEN|head-branch/u);
+  assert.doesNotMatch(workflow, /GITHUB_TOKEN:|--head-branch/u);
+  // The only token in a step's environment is Preview's own label lookup, which runs no pull request code.
+  assert.deepEqual([...workflow.matchAll(/GH_TOKEN: (.+)/gu)].map((match) => match[1]), ['${{ steps.pr-token.outputs.token }}']);
 });

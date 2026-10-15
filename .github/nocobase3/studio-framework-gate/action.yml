@@ -1,0 +1,86 @@
+name: Check Studio's framework half has merged
+description: >-
+  For a nocobase/studio pull request whose head branch names a change in nocobase/nocobase too, fail until that change
+  has merged and the committed vendor/nocobase3 pointer contains it. Reports the outcome in the job summary.
+
+inputs:
+  path:
+    description: The directory nocobase/studio is checked out in, with its vendor/nocobase3 submodule.
+    default: studio
+  head-ref:
+    description: The Studio pull request's head branch; empty for a push, which passes.
+    default: ''
+  github-token:
+    description: A token that can read nocobase/nocobase's pull requests (the public repository); only raises the API rate limit.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A change that spans the framework and Studio is two pull requests with the same head branch name. While the
+    # framework one is unmerged, studio-framework builds Studio on its branch, so the Studio half must not merge yet; once
+    # it has merged, the Studio pull request has to move the pointer to a commit that contains it. nocobase/nocobase
+    # squash-merges, so the merge commit, not the branch's commits, is what the pointer must contain. This runs before
+    # any of the pull request's own code, which never sees the token; nocobase/nocobase is fetched without a credential.
+    - name: Check the framework half
+      shell: bash
+      env:
+        STUDIO: ${{ inputs.path }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        PUBLIC_URL: https://github.com/nocobase/nocobase.git
+      run: |
+        set -euo pipefail
+        vendor="$STUDIO/vendor/nocobase3"
+        pointer=$(git -C "$STUDIO" rev-parse HEAD:vendor/nocobase3)
+        status=pass
+        case "$HEAD_REF" in
+          '')
+            message='No pull request head branch (a push): nothing to pair with nocobase/nocobase.'
+            ;;
+          main | dev | develop | next | v3-develop | v3-main)
+            message="\`$HEAD_REF\` is a long-lived branch name, never paired with a nocobase/nocobase change."
+            ;;
+          *)
+            if ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+              echo "::error::head_ref is not a valid branch name."
+              exit 1
+            fi
+            # One line per pull request, newest first: number, state, merged or unmerged, merge commit.
+            pulls=$(gh api -X GET repos/nocobase/nocobase/pulls -f state=all -f "head=nocobase:$HEAD_REF" -f per_page=100 \
+              --jq '.[] | "\(.number) \(.state) \(if .merged_at then "merged" else "unmerged" end) \(.merge_commit_sha // "-")"')
+            tip=$(git ls-remote --heads "$PUBLIC_URL" "refs/heads/$HEAD_REF" | awk -v ref="refs/heads/$HEAD_REF" '$2 == ref { print $1 }')
+            open=$(awk '$2 == "open" { print $1; exit }' <<<"$pulls")
+            read -r merged _ _ merge_commit < <(awk '$3 == "merged" { print; exit }' <<<"$pulls") || true
+            if [ -n "$open" ]; then
+              status=fail
+              message="nocobase/nocobase#$open (\`$HEAD_REF\`), the framework half of this change, has not merged yet; CI builds this pull request on its branch. Merge it first, then point vendor/nocobase3 at the v3-develop or v3-main commit that contains it."
+            elif [ -n "${merged:-}" ]; then
+              git -C "$vendor" fetch --quiet --no-tags --no-recurse-submodules "$PUBLIC_URL" \
+                '+refs/heads/v3-develop:refs/remotes/public/v3-develop' '+refs/heads/v3-main:refs/remotes/public/v3-main'
+              if git -C "$vendor" merge-base --is-ancestor "$merge_commit" "$pointer" 2>/dev/null; then
+                message="vendor/nocobase3 (\`${pointer:0:9}\`) contains nocobase/nocobase#$merged (\`$HEAD_REF\`), the framework half of this change."
+              else
+                status=fail
+                message="nocobase/nocobase#$merged (\`$HEAD_REF\`), the framework half of this change, has merged as \`${merge_commit:0:9}\`, but the committed vendor/nocobase3 (\`${pointer:0:9}\`) does not contain it. Point vendor/nocobase3 at the v3-develop or v3-main commit that does."
+              fi
+            elif [ -n "$pulls" ]; then
+              message="nocobase/nocobase's pull requests from \`$HEAD_REF\` were closed without merging; the committed pointer is what Studio builds with."
+            elif [ -n "$tip" ]; then
+              status=fail
+              message="nocobase/nocobase has a branch \`$HEAD_REF\`, named like this pull request's head, with no pull request; CI builds this pull request on it. Open and merge the framework change first, then point vendor/nocobase3 at the commit that contains it, or delete the branch if Studio does not need it."
+            else
+              message="nocobase/nocobase has no branch or pull request \`$HEAD_REF\`: nothing to wait for."
+            fi
+            ;;
+        esac
+        {
+          echo '### Framework half'
+          echo
+          if [ "$status" = fail ]; then echo "Failed: $message"; else echo "$message"; fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        if [ "$status" = fail ]; then
+          echo "::error::$message"
+          exit 1
+        fi
+        echo "$message"

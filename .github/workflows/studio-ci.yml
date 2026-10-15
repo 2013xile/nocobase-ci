@@ -11,9 +11,11 @@ run-name: studio-ci:${{ inputs.request_id }}
 #
 # A change that spans the framework and Studio is two pull requests with the same head branch name, such as
 # `agent/PM-42` in both repositories. Every job that builds or tests a Studio pull request builds it against
-# nocobase/nocobase's branch of that name while that branch exists and its pull request has not merged
+# nocobase/nocobase's branch of that name while that branch exists with an open pull request or none at all
 # (`.github/nocobase3/studio-framework`, which says which in the job summary), and against the committed pointer
-# otherwise. `Submodule pointer` keeps such a pull request from merging until the pointer includes the framework change.
+# otherwise. `Submodule pointer` keeps such a pull request from merging until the pointer includes the framework change
+# (`.github/nocobase3/studio-framework-gate`, a trusted step of this workflow; the pull request's own
+# scripts/check-submodule.mjs only checks the pointer is reachable, and is never given a token).
 #
 # - Every request: `Submodule pointer`, `Lint` (ESLint, then Prettier), `Typecheck`, `Test` (Vitest), `API document` and
 #   `CLI reference`.
@@ -103,15 +105,20 @@ jobs:
         with:
           node-version: 24
 
-      # Warns while vendor/nocobase3 points at a pull request branch; fails when no public branch or tag carries it, and,
-      # given the head branch, when nocobase/nocobase has an unmerged change under the same name, or a merged one the
-      # pointer does not include yet. The token only raises the rate limit of reading nocobase/nocobase's pull requests.
+      # Trusted, and before any of the pull request's own code runs, so that code can neither see the token nor change
+      # what this step reads: fails while nocobase/nocobase's change under the same head branch name is unmerged, or merged
+      # but not contained in the committed pointer. The token only reads nocobase/nocobase's pull requests.
+      - name: Check the framework half has merged
+        uses: ./.github/nocobase3/studio-framework-gate
+        with:
+          head-ref: ${{ inputs.head_ref }}
+          github-token: ${{ github.token }}
+
+      # The pull request's own script, with no token: warns while vendor/nocobase3 points at a pull request branch; fails
+      # when no public branch or tag carries it.
       - name: Check vendor/nocobase3 is reachable from a public branch or tag
         working-directory: studio
-        env:
-          HEAD_REF: ${{ inputs.head_ref }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/check-submodule.mjs --head-branch "$HEAD_REF"
+        run: node scripts/check-submodule.mjs
 
   check:
     name: ${{ matrix.name }}

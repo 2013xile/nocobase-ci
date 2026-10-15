@@ -1,6 +1,7 @@
 name: Put Studio on its framework branch
 description: >-
-  For a nocobase/studio pull request whose head branch also exists, unmerged, in nocobase/nocobase, check that branch
+  For a nocobase/studio pull request whose head branch also exists in nocobase/nocobase, with an open pull request or
+  none at all, check that branch
   out in vendor/nocobase3 in place of the committed pointer, and mirror its pnpm workspace settings; otherwise keep the
   committed pointer. Reports which one in the job summary.
 
@@ -30,8 +31,9 @@ runs:
   using: composite
   steps:
     # A change that spans the framework and Studio is two pull requests with the same head branch name. While the
-    # framework one is open its branch is what Studio has to build with; once it has merged, the Studio pull request
-    # moves the pointer, and `Submodule pointer` (scripts/check-submodule.mjs) fails until it does. nocobase/nocobase is
+    # framework one is open (or its branch has no pull request yet) its branch is what Studio has to build with; once it
+    # has merged, the Studio pull request moves the pointer, and `Submodule pointer` (studio-framework-gate) fails until
+    # it does. A framework pull request closed without merging leaves the committed pointer. nocobase/nocobase is
     # public: nothing here uses a credential to fetch it.
     - name: Choose vendor/nocobase3
       id: framework
@@ -63,10 +65,15 @@ runs:
             if [ -z "$tip" ]; then
               reason="nocobase/nocobase has no branch \`$HEAD_REF\`."
             else
-              merged=$(gh api -X GET repos/nocobase/nocobase/pulls -f state=closed -f "head=nocobase:$HEAD_REF" \
-                --jq '[.[] | select(.merged_at != null) | .number] | first // empty')
-              if [ -n "$merged" ]; then
+              # One line per pull request, newest first: number, state, merged or unmerged, merge commit.
+              pulls=$(gh api -X GET repos/nocobase/nocobase/pulls -f state=all -f "head=nocobase:$HEAD_REF" -f per_page=100 \
+                --jq '.[] | "\(.number) \(.state) \(if .merged_at then "merged" else "unmerged" end) \(.merge_commit_sha // "-")"')
+              open=$(awk '$2 == "open" { print $1; exit }' <<<"$pulls")
+              merged=$(awk '$3 == "merged" { print $1; exit }' <<<"$pulls")
+              if [ -z "$open" ] && [ -n "$merged" ]; then
                 reason="nocobase/nocobase#$merged (\`$HEAD_REF\`) has merged, so the pointer is what Studio builds with."
+              elif [ -z "$open" ] && [ -n "$pulls" ]; then
+                reason="nocobase/nocobase's pull requests from \`$HEAD_REF\` were closed without merging."
               else
                 git -C "$vendor" fetch --quiet --no-tags --no-recurse-submodules "$PUBLIC_URL" "$tip"
                 git -C "$vendor" checkout --quiet --detach "$tip"
@@ -76,7 +83,7 @@ runs:
                 git -C "$STUDIO" diff --stat -- pnpm-workspace.yaml
                 source=branch
                 sha=$tip
-                reason="nocobase/nocobase has the unmerged branch \`$HEAD_REF\` of the same name."
+                reason="nocobase/nocobase has the unmerged branch \`$HEAD_REF\` of the same name${open:+ (#$open)}."
               fi
             fi
             ;;
