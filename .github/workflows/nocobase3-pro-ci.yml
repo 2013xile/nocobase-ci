@@ -286,6 +286,177 @@ jobs:
       - name: Verify Pro plugins with current OSS Default source
         uses: ./.github/nocobase3/verify-create-app
 
+  # The commercial database drivers' integration suites each start their database in Docker Compose and take several
+  # minutes, so they run in their own parallel jobs, and on a pull request only when its changes may affect them: a
+  # driver package, the vendor/nocobase3 pointer that carries the shared contracts, or the root dependency manifests.
+  # Pushes always run them.
+  pro-db-plan:
+    name: Select Pro DB integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should_run: ${{ steps.select.outputs.should_run }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Select by changed files
+        id: select
+        shell: bash
+        working-directory: pro
+        env:
+          EVENT_NAME: ${{ inputs.event_name }}
+          BASE_SHA: ${{ inputs.base_sha }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          should_run=false
+          reason=''
+          matched=()
+
+          if [ "$EVENT_NAME" != 'pull_request' ]; then
+            should_run=true
+            reason="A $EVENT_NAME always runs the integration suites."
+          elif [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            should_run=true
+            reason='The base commit is unavailable, so every suite runs.'
+          elif ! git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/pro-db-changed-files"; then
+            should_run=true
+            reason='The changed files could not be listed, so every suite runs.'
+          else
+            while IFS= read -r -d '' file; do
+              case "$file" in
+                packages/libs/db-*|vendor/nocobase3|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.npmrc|.pnpmfile.cjs)
+                  matched+=("$file")
+                  ;;
+              esac
+            done < "$RUNNER_TEMP/pro-db-changed-files"
+
+            if ((${#matched[@]})); then
+              should_run=true
+              reason="${#matched[@]} changed file(s) may affect the database drivers."
+            else
+              reason='No change touches a database driver, the vendor/nocobase3 pointer, or the root dependency manifests.'
+            fi
+          fi
+
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+          echo "Pro DB integration: should_run=$should_run. $reason"
+          {
+            echo '### Pro DB integration'
+            echo
+            echo "Run the integration suites: \`$should_run\`. $reason"
+            if ((${#matched[@]})); then
+              echo
+              for file in "${matched[@]:0:20}"; do
+                echo "- \`$file\`"
+              done
+              if ((${#matched[@]} > 20)); then
+                echo "- and $((${#matched[@]} - 20)) more"
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pro-db-integration:
+    name: Pro DB integration (${{ matrix.database }})
+    needs: pro-db-plan
+    if: ${{ needs.pro-db-plan.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        database:
+          - kingbase
+          - dameng
+          - oceanbase
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: pro
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared development config
+        working-directory: pro
+        run: pnpm dev-config:build
+
+      - name: Run the ${{ matrix.database }} integration suite
+        working-directory: pro
+        run: pnpm --filter @nocobase/db-${{ matrix.database }} test:integration
+
+  pro-db-integration-summary:
+    name: Pro DB integration
+    if: ${{ always() }}
+    needs:
+      - pro-db-plan
+      - pro-db-integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the integration suites
+        env:
+          PLAN_RESULT: ${{ needs.pro-db-plan.result }}
+          SHOULD_RUN: ${{ needs.pro-db-plan.outputs.should_run }}
+          INTEGRATION_RESULT: ${{ needs.pro-db-integration.result }}
+        run: |
+          if [[ "$PLAN_RESULT" != 'success' ]]; then
+            echo "Selecting the Pro DB integration suites did not succeed ($PLAN_RESULT)."
+            exit 1
+          fi
+          if [[ "$SHOULD_RUN" == 'false' && "$INTEGRATION_RESULT" == 'skipped' ]]; then
+            echo 'No change may affect the database drivers, so the integration suites were skipped.'
+            exit 0
+          fi
+          if [[ "$INTEGRATION_RESULT" != 'success' ]]; then
+            echo "One or more Pro DB integration suites failed or were cancelled ($INTEGRATION_RESULT)."
+            exit 1
+          fi
+          echo 'Every Pro DB integration suite passed.'
+
   quality:
     name: quality
     if: ${{ always() }}
@@ -294,6 +465,7 @@ jobs:
       - changed-files
       - validation
       - create-app-smoke
+      - pro-db-integration-summary
     runs-on: ubuntu-latest
     steps:
       - name: Verify parallel jobs
@@ -302,8 +474,9 @@ jobs:
           CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
           VALIDATION_RESULT: ${{ needs.validation.result }}
           SMOKE_RESULT: ${{ needs.create-app-smoke.result }}
+          PRO_DB_RESULT: ${{ needs.pro-db-integration-summary.result }}
         run: |
-          if [[ "$SUBMODULE_RESULT" != 'success' || "$CHANGED_FILES_RESULT" != 'success' || "$VALIDATION_RESULT" != 'success' || "$SMOKE_RESULT" != 'success' ]]; then
+          if [[ "$SUBMODULE_RESULT" != 'success' || "$CHANGED_FILES_RESULT" != 'success' || "$VALIDATION_RESULT" != 'success' || "$SMOKE_RESULT" != 'success' || "$PRO_DB_RESULT" != 'success' ]]; then
             echo 'One or more quality jobs failed or were cancelled.'
             exit 1
           fi

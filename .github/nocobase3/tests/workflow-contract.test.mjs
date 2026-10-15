@@ -29,6 +29,9 @@ const expectedJobs = [
   'Test',
   'Build',
   'Pro plugins on OSS Default installation smoke test',
+  'Select Pro DB integration',
+  'Pro DB integration (${{ matrix.database }})',
+  'Pro DB integration',
   'quality',
   'Validate and advise',
   'Reject prerelease state',
@@ -53,7 +56,7 @@ test('keeps the workflow dispatch and run-name contract', () => {
   }
 });
 
-test('keeps the nine check job names and branch conditions', () => {
+test('keeps the check job names and branch conditions', () => {
   const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)];
   const matrixNames = [...workflow.matchAll(/^          - name: (Typecheck|Test|Build)$/gmu)].map(
     (match) => match[1],
@@ -68,6 +71,19 @@ test('keeps the nine check job names and branch conditions', () => {
     workflow,
     /name: Reject prerelease state\n    if: \$\{\{ inputs\.event_name == 'pull_request' && inputs\.target_branch == 'main' \}\}/u,
   );
+});
+
+test('runs each Pro database integration suite in its own job and gates quality on their summary', () => {
+  assert.match(
+    workflow,
+    /name: Pro DB integration \(\$\{\{ matrix\.database \}\}\)\n    needs: pro-db-plan\n    if: \$\{\{ needs\.pro-db-plan\.outputs\.should_run == 'true' \}\}/u,
+  );
+  assert.match(workflow, /        database:\n          - kingbase\n          - dameng\n          - oceanbase\n/u);
+  assert.match(workflow, /run: pnpm --filter @nocobase\/db-\$\{\{ matrix\.database \}\} test:integration/u);
+  assert.match(workflow, /name: Pro DB integration\n    if: \$\{\{ always\(\) \}\}\n    needs:\n      - pro-db-plan\n      - pro-db-integration\n/u);
+  const quality = workflow.slice(workflow.indexOf('  quality:\n'), workflow.indexOf('  changeset-check:\n'));
+  assert.match(quality, /^      - pro-db-integration-summary$/mu);
+  assert.match(quality, /"\$PRO_DB_RESULT" != 'success'/u);
 });
 
 test('keeps source access read-only and revokes the token before source code runs', () => {
