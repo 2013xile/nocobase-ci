@@ -87,3 +87,39 @@ test('uploads only failed e2e results and the public tarballs, briefly, and cach
   assert.ok(dist.every(([upload]) => /path: studio\/output\/dist\/stable\/(nb-studio|nocobase-runner)\n/u.test(upload)));
   assert.equal(e2e.length + dist.length, uploads.length);
 });
+
+test("runs Studio's own scripts with the repository's pnpm, after a full install", () => {
+  assert.doesNotMatch(workflow, /^\s+version: /mu);
+  assert.equal(
+    [...workflow.matchAll(/uses: pnpm\/action-setup@v4\n        with:\n          package_json_file: studio\/package\.json\n/gu)].length,
+    [...workflow.matchAll(/uses: pnpm\/action-setup@v4/gu)].length,
+  );
+  assert.equal(
+    [...workflow.matchAll(/working-directory: studio\n        run: pnpm install --frozen-lockfile\n/gu)].length,
+    4,
+  );
+  const runs = Object.fromEntries(
+    [...job('check').matchAll(/^          - name: (.+)\n            run: (.+)$/gmu)].map((match) => [match[1], match[2]]),
+  );
+  assert.deepEqual(runs, {
+    Lint: 'pnpm lint && pnpm format:check',
+    Typecheck: 'pnpm typecheck',
+    Test: 'pnpm test',
+    'API document': 'pnpm openapi:check',
+    'CLI reference': 'pnpm cli-reference:check',
+  });
+  assert.match(job('check'), /run: \$\{\{ matrix\.run \}\}\n/u);
+  assert.match(job('submodule'), /run: node scripts\/check-submodule\.mjs\n/u);
+});
+
+test('builds Studio before its browser tests and keeps both suites apart', () => {
+  const e2e = job('e2e');
+  const order = ['run: pnpm build\n', 'run: pnpm exec playwright install --with-deps chromium\n', 'run: pnpm test:e2e\n', 'run: pnpm test:screenshots\n'];
+  const at = order.map((line) => e2e.indexOf(line));
+  assert.ok(at.every((index) => index !== -1), 'every e2e step');
+  assert.deepEqual([...at].sort((a, b) => a - b), at);
+  assert.match(e2e, /path: studio\/output\/screenshots\n/u);
+  assert.match(e2e, /path: \|\n            studio\/test-results\n            studio\/output\/screenshot-results\n/u);
+  assert.match(job('dist'), /run: pnpm nocobase cli build --out output\/dist\n/u);
+  assert.match(job('dist'), /run: pnpm nocobase cli build --runner --out output\/dist\n/u);
+});

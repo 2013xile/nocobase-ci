@@ -4,11 +4,18 @@ run-name: studio-ci:${{ inputs.request_id }}
 # The CI of the private nocobase/studio repository, dispatched by nocobase-bot (docs/ci-forwarding.md there), which
 # mirrors each job below as a check run of the same name on nocobase/studio. The job names are that protocol.
 #
-# - Every request: `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document` and `CLI reference`.
-# - Pull requests: `Studio e2e`, and `Preview`, which deploys the pull request's head to its own App `studio-pr-<n>` in
-#   Studio's `preview` environment, as Studio's standard preview workflow does (`nb-studio build ci workflows`).
+# Studio is the workspace root of that repository and the framework is the submodule vendor/nocobase3 (nocobase/nocobase
+# on v3-develop); nb-studio's brand package is packages/studio-cli. Every job installs the whole workspace with the pnpm
+# of the repository's `packageManager`, and runs Studio's own scripts.
+#
+# - Every request: `Submodule pointer`, `Lint` (ESLint, then Prettier), `Typecheck`, `Test` (Vitest), `API document` and
+#   `CLI reference`.
+# - Pull requests: `Studio e2e` (Playwright against the built Studio), and `Preview`, which deploys the pull request's
+#   head to its own App `studio-pr-<n>` in Studio's `preview` environment, as Studio's standard preview workflow does
+#   (`nb-studio build ci workflows`).
 # - Pushes to main: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image built by
-#   studio-image.yml bakes them in; this job only proves they build, and keeps them as artifacts for three days.
+#   studio-image.yml carries the universal packages Studio's own build packs; this job only proves the per-platform
+#   tarballs build, and keeps them as artifacts for three days.
 #
 # This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
 # the tarballs, only the e2e job uploads its screenshots and traces, on failure, kept for three days.
@@ -100,18 +107,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ESLint with its type-aware rules, then Prettier over the repository (Studio's `check` runs both).
           - name: Lint
-            script: lint
+            run: pnpm lint && pnpm format:check
+          # The client, the Node tooling and the server tsconfigs.
           - name: Typecheck
-            script: typecheck
+            run: pnpm typecheck
+          # Vitest over tests/**; no build and no browser.
           - name: Test
-            script: test
+            run: pnpm test
           # Starts Studio on SQLite test databases with the framework's check; no build needed.
           - name: API document
-            script: openapi:check
+            run: pnpm openapi:check
           # The command reference (docs/cli/reference) is generated from the API document.
           - name: CLI reference
-            script: cli-reference:check
+            run: pnpm cli-reference:check
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -137,7 +147,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
+          package_json_file: studio/package.json
           run_install: false
 
       - name: Set up Node.js
@@ -151,15 +161,16 @@ jobs:
 
       - name: ${{ matrix.name }}
         working-directory: studio
-        run: pnpm ${{ matrix.script }}
+        run: ${{ matrix.run }}
 
-  # Studio's browser tests (docs/e2e.md in nocobase/studio) against a throwaway Studio the tests start from the build,
-  # on SQLite with the demo data. No secrets: the server is local and the demo reaches neither GitHub nor a model.
+  # Studio's browser tests (docs/e2e.md in nocobase/studio) against a throwaway Studio the tests start from the build
+  # (dist/server/standalone.js), on SQLite with the demo data and a local mock model. No secrets: the server and the
+  # model are local, and nothing reaches GitHub or a model provider.
   e2e:
     name: Studio e2e
     if: ${{ inputs.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       # The build typechecks Studio and the framework together, which needs more than Node's default heap.
       NODE_OPTIONS: --max-old-space-size=6144
@@ -188,7 +199,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
+          package_json_file: studio/package.json
           run_install: false
 
       - name: Set up Node.js
@@ -200,7 +211,8 @@ jobs:
         working-directory: studio
         run: pnpm install --frozen-lockfile
 
-      # Builds the workspace packages Studio depends on, then Studio's client and server into dist.
+      # Builds the workspace packages Studio depends on, then Studio's client and server into dist, with the universal
+      # nb-studio and nocobase-runner packages in dist/runners.
       - name: Build Studio
         working-directory: studio
         run: pnpm build
@@ -209,6 +221,7 @@ jobs:
         working-directory: studio
         run: pnpm exec playwright install --with-deps chromium
 
+      # The `e2e` Playwright project: every flow in e2e/*.test.ts, the phone flows at iPhone 13 size.
       - name: Flows
         working-directory: studio
         run: pnpm test:e2e
@@ -228,12 +241,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+      # The flows' traces and failure screenshots, and the screenshot project's own, which it keeps apart.
       - name: Upload failed test traces
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: studio-e2e-results
-          path: studio/test-results
+          path: |
+            studio/test-results
+            studio/output/screenshot-results
           if-no-files-found: ignore
           retention-days: 3
 
@@ -338,7 +354,7 @@ jobs:
         if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
+          package_json_file: studio/package.json
           run_install: false
 
       - name: Set up Node.js
@@ -411,7 +427,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
+          package_json_file: studio/package.json
           run_install: false
 
       - name: Set up Node.js
