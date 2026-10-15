@@ -3,22 +3,23 @@ run-name: studio-image:${{ inputs.ref }}
 
 # Builds NocoBase Studio's internal image from the private nocobase/studio repository, from any branch, tag or commit,
 # and pushes it to the internal registry. Studio is the repository root and the framework is the public submodule
-# vendor/nocobase3 (nocobase/nocobase on v3-develop); nb-studio's brand package is packages/studio-cli. Studio's,
+# vendor/nocobase3; nb-studio's brand package is packages/studio-cli. Studio's long-lived branches mirror
+# nocobase/nocobase's: `dev` tracks `v3-develop` and `main` tracks `v3-main`. Studio's,
 # nb-studio's (`@nocobase/studio-cli`) and the runner's (`@nocobase/agent-runner`, in the submodule) versions are first
 # stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners and CLIs
 # see the build as newer and upgrade. Studio's own `pnpm build` then packs the universal `nb-studio` and
 # `nocobase-runner` packages, which carry no Node.js, at those versions into dist/runners, which the prebuilt image
-# carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>`, and `dev` as well when `ref`
-# is `main`; a build of any other ref never moves `dev`.
+# carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>`, plus the moving tag of the
+# branch: `dev` when `ref` is `dev`, `main` when it is `main`. A build of any other ref moves neither.
 #
 # Studio is no longer released to public registries: this internal image is the only one.
 #
 # The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`).
 #
-# nocobase-bot dispatches it with `ref=main` for every push to nocobase/studio's main; a newer push cancels the build in
-# progress. Run it by hand for any other ref:
+# nocobase-bot dispatches it with `ref` set to the branch for every push to nocobase/studio's `dev` or `main`; a newer
+# push to the same branch cancels the build in progress. Run it by hand for any other ref:
 #
-#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=main
+#   gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=dev
 
 on:
   workflow_dispatch:
@@ -26,7 +27,7 @@ on:
       ref:
         description: Branch, tag or commit of nocobase/studio to build.
         required: true
-        default: main
+        default: dev
         type: string
 
 permissions:
@@ -80,7 +81,7 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
 
-      # dev-<short sha>, and the moving tag dev for main only.
+      # dev-<short sha>, and the moving tag of a long-lived branch: dev for dev, main for main.
       - name: Name the tags
         id: tags
         env:
@@ -90,9 +91,9 @@ jobs:
           image="${REGISTRY}/nocobase/studio"
           sha=$(git rev-parse --short=7 HEAD)
           tags=$(printf '%s:dev-%s' "$image" "$sha")
-          if [ "$REF" = main ]; then
-            tags=$(printf '%s\n%s:dev' "$tags" "$image")
-          fi
+          case "$REF" in
+            dev | main) tags=$(printf '%s\n%s:%s' "$tags" "$image" "$REF") ;;
+          esac
           {
             echo "sha=${sha}"
             echo "tags<<EOF"

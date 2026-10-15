@@ -29,7 +29,7 @@ function script(name) {
 }
 
 // Runs the tag step in a throwaway repository whose Studio manifest has `version`.
-function nameTags({ version, ref = 'main' }) {
+function nameTags({ version, ref = 'dev' }) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-image-'));
   try {
     const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
@@ -106,14 +106,20 @@ test('takes the ref to build, and no release mode', () => {
   assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}\n/u);
 });
 
-test('tags a build of main dev-<short sha> and dev', () => {
+test('tags a build of dev dev-<short sha> and dev', () => {
   const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59' });
   assert.equal(status, 0);
   assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`]);
 });
 
-test('tags a build of any other ref dev-<short sha> alone, so it never moves dev', () => {
-  for (const ref of ['feat/anything', 'v3-develop', 'main-backup', '0123abc']) {
+test('gives main its own moving tag, so it never replaces dev', () => {
+  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59', ref: 'main' });
+  assert.equal(status, 0);
+  assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:main`]);
+});
+
+test('tags a build of any other ref dev-<short sha> alone, so it moves neither dev nor main', () => {
+  for (const ref of ['feat/anything', 'agent/PM-42', 'v3-develop', 'main-backup', 'dev-1', '0123abc']) {
     const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59', ref });
     assert.equal(status, 0);
     assert.deepEqual(tags, [`${image}:dev-${sha}`], ref);
@@ -123,7 +129,7 @@ test('tags a build of any other ref dev-<short sha> alone, so it never moves dev
 test('checks out the private nocobase/studio at the ref, with its submodule, through a read-only token it revokes', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /description: Branch, tag or commit of nocobase\/studio to build\.\n/u);
-  assert.match(inputs, /default: main\n/u);
+  assert.match(inputs, /default: dev\n/u);
   const token = step('Create a read-only source token');
   assert.match(token, /app-id: \$\{\{ vars\.NOCOBASE_APP_ID \}\}\n/u);
   assert.match(token, /private-key: \$\{\{ secrets\.NOCOBASE_APP_PRIVATE_KEY \}\}\n/u);

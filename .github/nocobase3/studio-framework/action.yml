@@ -1,0 +1,99 @@
+name: Put Studio on its framework branch
+description: >-
+  For a nocobase/studio pull request whose head branch also exists, unmerged, in nocobase/nocobase, check that branch
+  out in vendor/nocobase3 in place of the committed pointer, and mirror its pnpm workspace settings; otherwise keep the
+  committed pointer. Reports which one in the job summary.
+
+inputs:
+  path:
+    description: The directory nocobase/studio is checked out in, with its vendor/nocobase3 submodule.
+    default: studio
+  head-ref:
+    description: The Studio pull request's head branch; empty for a push, which always keeps the committed pointer.
+    default: ''
+  github-token:
+    description: A token that can read nocobase/nocobase's pull requests (the public repository); only raises the API rate limit.
+    required: true
+
+outputs:
+  source:
+    description: "`branch` when vendor/nocobase3 is the same-name nocobase/nocobase branch, `pointer` for the committed pointer."
+    value: ${{ steps.framework.outputs.source }}
+  sha:
+    description: The commit vendor/nocobase3 is checked out at.
+    value: ${{ steps.framework.outputs.sha }}
+  install-flag:
+    description: "`--frozen-lockfile` on the committed pointer; `--no-frozen-lockfile` on a branch, whose dependencies Studio's lockfile may not describe."
+    value: ${{ steps.framework.outputs.install-flag }}
+
+runs:
+  using: composite
+  steps:
+    # A change that spans the framework and Studio is two pull requests with the same head branch name. While the
+    # framework one is open its branch is what Studio has to build with; once it has merged, the Studio pull request
+    # moves the pointer, and `Submodule pointer` (scripts/check-submodule.mjs) fails until it does. nocobase/nocobase is
+    # public: nothing here uses a credential to fetch it.
+    - name: Choose vendor/nocobase3
+      id: framework
+      shell: bash
+      env:
+        STUDIO: ${{ inputs.path }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        PUBLIC_URL: https://github.com/nocobase/nocobase.git
+      run: |
+        set -euo pipefail
+        vendor="$STUDIO/vendor/nocobase3"
+        pointer=$(git -C "$STUDIO" rev-parse HEAD:vendor/nocobase3)
+        source=pointer
+        sha=$pointer
+        case "$HEAD_REF" in
+          '')
+            reason='No pull request head branch (a push).'
+            ;;
+          main | dev | develop | next | v3-develop | v3-main)
+            reason="\`$HEAD_REF\` is a long-lived branch name, never paired with a framework branch."
+            ;;
+          *)
+            if ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+              echo "::error::head_ref is not a valid branch name."
+              exit 1
+            fi
+            tip=$(git ls-remote --heads "$PUBLIC_URL" "refs/heads/$HEAD_REF" | awk -v ref="refs/heads/$HEAD_REF" '$2 == ref { print $1 }')
+            if [ -z "$tip" ]; then
+              reason="nocobase/nocobase has no branch \`$HEAD_REF\`."
+            else
+              merged=$(gh api -X GET repos/nocobase/nocobase/pulls -f state=closed -f "head=nocobase:$HEAD_REF" \
+                --jq '[.[] | select(.merged_at != null) | .number] | first // empty')
+              if [ -n "$merged" ]; then
+                reason="nocobase/nocobase#$merged (\`$HEAD_REF\`) has merged, so the pointer is what Studio builds with."
+              else
+                git -C "$vendor" fetch --quiet --no-tags --no-recurse-submodules "$PUBLIC_URL" "$tip"
+                git -C "$vendor" checkout --quiet --detach "$tip"
+                # pnpm reads the catalog, overrides and build settings only from Studio's workspace root, which mirrors
+                # vendor/nocobase3/pnpm-workspace.yaml below its own `packages:`; mirror the branch's.
+                node "$GITHUB_ACTION_PATH/../mirror-workspace.mjs" "$STUDIO/pnpm-workspace.yaml" "$vendor/pnpm-workspace.yaml"
+                git -C "$STUDIO" diff --stat -- pnpm-workspace.yaml
+                source=branch
+                sha=$tip
+                reason="nocobase/nocobase has the unmerged branch \`$HEAD_REF\` of the same name."
+              fi
+            fi
+            ;;
+        esac
+        if [ "$source" = branch ]; then flag=--no-frozen-lockfile; else flag=--frozen-lockfile; fi
+        {
+          echo "source=$source"
+          echo "sha=$sha"
+          echo "install-flag=$flag"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo '### Framework'
+          echo
+          if [ "$source" = branch ]; then
+            echo "vendor/nocobase3 is nocobase/nocobase's \`$HEAD_REF\` at \`${sha:0:9}\`, not the committed pointer \`${pointer:0:9}\`. $reason"
+          else
+            echo "vendor/nocobase3 is the committed pointer \`${pointer:0:9}\`. $reason"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "vendor/nocobase3: $source at $sha. $reason"

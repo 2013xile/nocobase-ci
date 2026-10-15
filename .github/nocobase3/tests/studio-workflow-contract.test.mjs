@@ -31,9 +31,16 @@ function job(id) {
 const dispatchInputs = (source) =>
   source.slice(source.indexOf('  workflow_dispatch:\n'), source.indexOf('\npermissions:\n'));
 
-test('takes the same dispatch inputs as Pro and names its runs studio-ci', () => {
+test("takes Pro's dispatch inputs plus the optional head branch, and names its runs studio-ci", () => {
   assert.match(workflow, /^run-name: studio-ci:\$\{\{ inputs\.request_id \}\}$/mu);
-  assert.equal(dispatchInputs(workflow), dispatchInputs(proWorkflow));
+  const headRef = `      head_ref:
+        description: The source pull request's head branch, or empty for a push.
+        required: false
+        default: ''
+        type: string
+`;
+  assert.ok(dispatchInputs(workflow).endsWith(headRef));
+  assert.equal(dispatchInputs(workflow).slice(0, -headRef.length), dispatchInputs(proWorkflow));
 });
 
 test('keeps the check job names and their events', () => {
@@ -43,7 +50,10 @@ test('keeps the check job names and their events', () => {
   assert.deepEqual(names, expectedJobs);
   assert.match(job('e2e'), /if: \$\{\{ inputs\.event_name == 'pull_request' \}\}/u);
   assert.match(job('preview'), /if: \$\{\{ inputs\.event_name == 'pull_request' \}\}/u);
-  assert.match(job('dist'), /if: \$\{\{ inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}/u);
+  assert.match(
+    job('dist'),
+    /if: \$\{\{ inputs\.event_name == 'push' && \(inputs\.target_branch == 'dev' \|\| inputs\.target_branch == 'main'\) \}\}/u,
+  );
 });
 
 test('checks out only nocobase/studio through the shared checkout action', () => {
@@ -94,10 +104,15 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
     [...workflow.matchAll(/uses: pnpm\/action-setup@v4\n        with:\n          package_json_file: studio\/package\.json\n/gu)].length,
     [...workflow.matchAll(/uses: pnpm\/action-setup@v4/gu)].length,
   );
-  assert.equal(
-    [...workflow.matchAll(/working-directory: studio\n        run: pnpm install --frozen-lockfile\n/gu)].length,
-    4,
-  );
+  // The committed pointer installs from the lockfile; a same-name framework branch may need it resolved again.
+  for (const id of ['check', 'e2e', 'preview']) {
+    assert.match(
+      job(id),
+      /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
+      id,
+    );
+  }
+  assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
   const runs = Object.fromEntries(
     [...job('check').matchAll(/^          - name: (.+)\n            run: (.+)$/gmu)].map((match) => [match[1], match[2]]),
   );
@@ -109,7 +124,9 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
     'CLI reference': 'pnpm cli-reference:check',
   });
   assert.match(job('check'), /run: \$\{\{ matrix\.run \}\}\n/u);
-  assert.match(job('submodule'), /run: node scripts\/check-submodule\.mjs\n/u);
+  assert.match(job('submodule'), /HEAD_REF: \$\{\{ inputs\.head_ref \}\}\n/u);
+  assert.match(job('submodule'), /GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/u);
+  assert.match(job('submodule'), /run: node scripts\/check-submodule\.mjs --head-branch "\$HEAD_REF"\n/u);
 });
 
 test('builds Studio before its browser tests and keeps both suites apart', () => {
@@ -122,4 +139,21 @@ test('builds Studio before its browser tests and keeps both suites apart', () =>
   assert.match(e2e, /path: \|\n            studio\/test-results\n            studio\/output\/screenshot-results\n/u);
   assert.match(job('dist'), /run: pnpm nocobase cli build --out output\/dist\n/u);
   assert.match(job('dist'), /run: pnpm nocobase cli build --runner --out output\/dist\n/u);
+});
+
+test('builds every pull request job on the same-name framework branch when there is one, right after the checkout', () => {
+  for (const id of ['check', 'e2e', 'preview']) {
+    const source = job(id);
+    const step = source.indexOf('      - name: Choose the framework\n');
+    assert.notEqual(step, -1, id);
+    assert.match(
+      source.slice(step),
+      /uses: \.\/\.github\/nocobase3\/studio-framework\n        with:\n          head-ref: \$\{\{ inputs\.head_ref \}\}\n          github-token: \$\{\{ github\.token \}\}\n/u,
+      id,
+    );
+    assert.ok(source.indexOf('uses: ./.github/nocobase3/checkout') < step, id);
+    assert.ok(step < source.indexOf('      - name: Install dependencies\n'), id);
+  }
+  assert.match(job('preview'), /- name: Choose the framework\n        id: framework\n        if: \$\{\{ steps\.gate\.outputs\.skip != 'true' \}\}\n/u);
+  for (const id of ['submodule', 'dist']) assert.doesNotMatch(job(id), /studio-framework/u, id);
 });

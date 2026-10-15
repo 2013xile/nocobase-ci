@@ -4,18 +4,25 @@ run-name: studio-ci:${{ inputs.request_id }}
 # The CI of the private nocobase/studio repository, dispatched by nocobase-bot (docs/ci-forwarding.md there), which
 # mirrors each job below as a check run of the same name on nocobase/studio. The job names are that protocol.
 #
-# Studio is the workspace root of that repository and the framework is the submodule vendor/nocobase3 (nocobase/nocobase
-# on v3-develop); nb-studio's brand package is packages/studio-cli. Every job installs the whole workspace with the pnpm
-# of the repository's `packageManager`, and runs Studio's own scripts.
+# Studio is the workspace root of that repository and the framework is the submodule vendor/nocobase3; nb-studio's brand
+# package is packages/studio-cli. Studio's two long-lived branches mirror nocobase/nocobase's: `dev` tracks `v3-develop`
+# and `main` tracks `v3-main`, and pull requests normally target `dev`. Every job installs the whole workspace with the
+# pnpm of the repository's `packageManager`, and runs Studio's own scripts.
+#
+# A change that spans the framework and Studio is two pull requests with the same head branch name, such as
+# `agent/PM-42` in both repositories. Every job that builds or tests a Studio pull request builds it against
+# nocobase/nocobase's branch of that name while that branch exists and its pull request has not merged
+# (`.github/nocobase3/studio-framework`, which says which in the job summary), and against the committed pointer
+# otherwise. `Submodule pointer` keeps such a pull request from merging until the pointer includes the framework change.
 #
 # - Every request: `Submodule pointer`, `Lint` (ESLint, then Prettier), `Typecheck`, `Test` (Vitest), `API document` and
 #   `CLI reference`.
-# - Pull requests: `Studio e2e` (Playwright against the built Studio), and `Preview`, which deploys the pull request's
-#   head to its own App `studio-pr-<n>` in Studio's `preview` environment, as Studio's standard preview workflow does
-#   (`nb-studio build ci workflows`).
-# - Pushes to main: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image built by
-#   studio-image.yml carries the universal packages Studio's own build packs; this job only proves the per-platform
-#   tarballs build, and keeps them as artifacts for three days.
+# - Pull requests, to `dev`, `main` or any other branch: `Studio e2e` (Playwright against the built Studio), and
+#   `Preview`, which deploys the pull request's head to its own App `studio-pr-<n>` in Studio's `preview` environment, as
+#   Studio's standard preview workflow does (`nb-studio build ci workflows`).
+# - Pushes to `dev` and `main`: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image
+#   built by studio-image.yml carries the universal packages Studio's own build packs; this job only proves the
+#   per-platform tarballs build, and keeps them as artifacts for three days. Pushes always use the committed pointer.
 #
 # This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
 # the tarballs, only the e2e job uploads its screenshots and traces, on failure, kept for three days.
@@ -50,6 +57,11 @@ on:
       skip_label:
         description: Whether the source pull request has the release:skip label (true or false).
         required: true
+        type: string
+      head_ref:
+        description: The source pull request's head branch, or empty for a push.
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -91,10 +103,15 @@ jobs:
         with:
           node-version: 24
 
-      # Warns while vendor/nocobase3 points at a pull request branch; fails when no public branch or tag carries it.
+      # Warns while vendor/nocobase3 points at a pull request branch; fails when no public branch or tag carries it, and,
+      # given the head branch, when nocobase/nocobase has an unmerged change under the same name, or a merged one the
+      # pointer does not include yet. The token only raises the rate limit of reading nocobase/nocobase's pull requests.
       - name: Check vendor/nocobase3 is reachable from a public branch or tag
         working-directory: studio
-        run: node scripts/check-submodule.mjs
+        env:
+          HEAD_REF: ${{ inputs.head_ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-submodule.mjs --head-branch "$HEAD_REF"
 
   check:
     name: ${{ matrix.name }}
@@ -155,9 +172,18 @@ jobs:
         with:
           node-version: 24
 
+      - name: Choose the framework
+        id: framework
+        uses: ./.github/nocobase3/studio-framework
+        with:
+          head-ref: ${{ inputs.head_ref }}
+          github-token: ${{ github.token }}
+
       - name: Install dependencies
         working-directory: studio
-        run: pnpm install --frozen-lockfile
+        env:
+          INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
+        run: pnpm install "$INSTALL_FLAG"
 
       - name: ${{ matrix.name }}
         working-directory: studio
@@ -207,9 +233,18 @@ jobs:
         with:
           node-version: 24
 
+      - name: Choose the framework
+        id: framework
+        uses: ./.github/nocobase3/studio-framework
+        with:
+          head-ref: ${{ inputs.head_ref }}
+          github-token: ${{ github.token }}
+
       - name: Install dependencies
         working-directory: studio
-        run: pnpm install --frozen-lockfile
+        env:
+          INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
+        run: pnpm install "$INSTALL_FLAG"
 
       # Builds the workspace packages Studio depends on, then Studio's client and server into dist, with the universal
       # nb-studio and nocobase-runner packages in dist/runners.
@@ -363,10 +398,20 @@ jobs:
         with:
           node-version: 24
 
+      - name: Choose the framework
+        id: framework
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: ./.github/nocobase3/studio-framework
+        with:
+          head-ref: ${{ inputs.head_ref }}
+          github-token: ${{ github.token }}
+
       - name: Install dependencies
         if: ${{ steps.gate.outputs.skip != 'true' }}
         working-directory: studio
-        run: pnpm install --frozen-lockfile
+        env:
+          INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
+        run: pnpm install "$INSTALL_FLAG"
 
       # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
       - name: Build the deployment archive
@@ -399,7 +444,7 @@ jobs:
   # product with its own manifest.
   dist:
     name: Dist
-    if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
+    if: ${{ inputs.event_name == 'push' && (inputs.target_branch == 'dev' || inputs.target_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -435,6 +480,7 @@ jobs:
         with:
           node-version: 24
 
+      # A push builds the committed pointer.
       - name: Install dependencies
         working-directory: studio
         run: pnpm install --frozen-lockfile
