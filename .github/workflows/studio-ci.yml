@@ -27,7 +27,7 @@ run-name: studio-ci:${{ inputs.request_id }}
 #   per-platform tarballs build, and keeps them as artifacts for three days. Pushes always use the committed pointer.
 #
 # This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
-# the tarballs, only the e2e job uploads its screenshots and traces, on failure, kept for three days.
+# the tarballs, only the e2e job uploads its traces and failure screenshots, on failure, kept for three days.
 
 on:
   workflow_dispatch:
@@ -268,30 +268,14 @@ jobs:
         working-directory: studio
         run: pnpm test:e2e
 
-      - name: Screenshots
-        if: ${{ !cancelled() }}
-        working-directory: studio
-        run: pnpm test:screenshots
-
-      # Public repository: what the pages showed is uploaded only to look into a failure, and kept briefly.
-      - name: Upload screenshots
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: studio-screenshots
-          path: studio/output/screenshots
-          if-no-files-found: ignore
-          retention-days: 3
-
-      # The flows' traces and failure screenshots, and the screenshot project's own, which it keeps apart.
+      # The flows' traces and failure screenshots. The `screenshots` Playwright project (`pnpm test:screenshots`)
+      # asserts nothing beyond page errors and is not run on pull requests; run it locally when a change needs it.
       - name: Upload failed test traces
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: studio-e2e-results
-          path: |
-            studio/test-results
-            studio/output/screenshot-results
+          path: studio/test-results
           if-no-files-found: ignore
           retention-days: 3
 
