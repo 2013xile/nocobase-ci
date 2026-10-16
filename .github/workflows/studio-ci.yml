@@ -1,33 +1,30 @@
 name: NocoBase Studio CI
 run-name: studio-ci:${{ inputs.request_id }}
 
-# The CI of the private nocobase/studio repository, dispatched by nocobase-bot (docs/ci-forwarding.md there), which
-# mirrors each job below as a check run of the same name on nocobase/studio. The job names are that protocol.
+# The checks of the private nocobase/studio repository that need this repository's secrets, dispatched by nocobase-bot
+# (docs/ci-forwarding.md there), which mirrors each job below as a check run of the same name on nocobase/studio. The
+# job names are that protocol. Studio's other checks, `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document`,
+# `CLI reference` and `Studio e2e`, need no secret and run in studio-quality.yml of the CI repository pool
+# (chenos/nocobase-ci and its copies), which the bot dispatches for the same requests.
 #
 # Studio is the workspace root of that repository and the framework is the submodule vendor/nocobase3; nb-studio's brand
 # package is packages/studio-cli. Studio's two long-lived branches mirror nocobase/nocobase's: `dev` tracks `v3-develop`
 # and `main` tracks `v3-main`, and pull requests normally target `dev`. Every job installs the whole workspace with the
 # pnpm of the repository's `packageManager`, and runs Studio's own scripts.
 #
-# A change that spans the framework and Studio is two pull requests with the same head branch name, such as
-# `agent/PM-42` in both repositories. Every job that builds or tests a Studio pull request builds it against
-# nocobase/nocobase's branch of that name while that branch exists with an open pull request or none at all
-# (`.github/nocobase3/studio-framework`, which says which in the job summary), and against the committed pointer
-# otherwise. `Submodule pointer` keeps such a pull request from merging until the pointer includes the framework change
-# (`.github/nocobase3/studio-framework-gate`, a trusted step of this workflow; the pull request's own
-# scripts/check-submodule.mjs only checks the pointer is reachable, and is never given a token).
-#
-# - Every request: `Submodule pointer`, `Lint` (ESLint, then Prettier), `Typecheck`, `Test` (Vitest), `API document` and
-#   `CLI reference`.
-# - Pull requests, to `dev`, `main` or any other branch: `Studio e2e` (Playwright against the built Studio), and
-#   `Preview`, which deploys the pull request's head to its own App `studio-pr-<n>` in Studio's `preview` environment, as
-#   Studio's standard preview workflow does (`nb-studio build ci workflows`).
+# - Pull requests, to `dev`, `main` or any other branch: `Preview`, which deploys the pull request's head to its own App
+#   `studio-pr-<n>` in Studio's `preview` environment, as Studio's standard preview workflow does
+#   (`nb-studio build ci workflows`). A change that spans the framework and Studio is two pull requests with the same
+#   head branch name, such as `agent/PM-42` in both repositories; the preview builds Studio against nocobase/nocobase's
+#   branch of that name while that branch exists with an open pull request or none at all
+#   (`.github/nocobase3/studio-framework`, which says which in the job summary), and against the committed pointer
+#   otherwise.
 # - Pushes to `dev` and `main`: `Dist`, which builds the `nb-studio` and `nocobase-runner` tarballs as a check. The image
 #   built by studio-image.yml carries the universal packages Studio's own build packs; this job only proves the
 #   per-platform tarballs build, and keeps them as artifacts for three days. Pushes always use the committed pointer.
 #
-# This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Besides
-# the tarballs, only the e2e job uploads its traces and failure screenshots, on failure, kept for three days.
+# This repository is public: nothing uploads Studio's source or its application build, and nothing is cached. Only the
+# tarballs are uploaded, kept for three days.
 
 on:
   workflow_dispatch:
@@ -74,211 +71,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  submodule:
-    name: Submodule pointer
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out trusted CI helpers
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/nocobase3
-
-      - name: Check out fixed source snapshot
-        uses: ./.github/nocobase3/checkout
-        with:
-          repository: studio
-          path: studio
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          request-id: ${{ inputs.request_id }}
-          event-name: ${{ inputs.event_name }}
-          head-sha: ${{ inputs.head_sha }}
-          base-sha: ${{ inputs.base_sha }}
-          target-branch: ${{ inputs.target_branch }}
-          pr-number: ${{ inputs.pr_number }}
-          skip-label: ${{ inputs.skip_label }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      # Trusted, and before any of the pull request's own code runs, so that code can neither see the token nor change
-      # what this step reads: fails while nocobase/nocobase's change under the same head branch name is unmerged, or merged
-      # but not contained in the committed pointer. The token only reads nocobase/nocobase's pull requests.
-      - name: Check the framework half has merged
-        uses: ./.github/nocobase3/studio-framework-gate
-        with:
-          head-ref: ${{ inputs.head_ref }}
-          github-token: ${{ github.token }}
-
-      # The pull request's own script, with no token: warns while vendor/nocobase3 points at a pull request branch; fails
-      # when no public branch or tag carries it.
-      - name: Check vendor/nocobase3 is reachable from a public branch or tag
-        working-directory: studio
-        run: node scripts/check-submodule.mjs
-
-  check:
-    name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      # Typecheck and type-aware lint load the whole framework from the submodule's sources; the default heap is too small.
-      NODE_OPTIONS: --max-old-space-size=6144
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ESLint with its type-aware rules, then Prettier over the repository (Studio's `check` runs both).
-          - name: Lint
-            run: pnpm lint && pnpm format:check
-          # The client, the Node tooling and the server tsconfigs.
-          - name: Typecheck
-            run: pnpm typecheck
-          # Vitest over tests/**; no build and no browser.
-          - name: Test
-            run: pnpm test
-          # Starts Studio on SQLite test databases with the framework's check; no build needed.
-          - name: API document
-            run: pnpm openapi:check
-          # The command reference (docs/cli/reference) is generated from the API document.
-          - name: CLI reference
-            run: pnpm cli-reference:check
-    steps:
-      - name: Check out trusted CI helpers
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/nocobase3
-
-      - name: Check out fixed source snapshot
-        uses: ./.github/nocobase3/checkout
-        with:
-          repository: studio
-          path: studio
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          request-id: ${{ inputs.request_id }}
-          event-name: ${{ inputs.event_name }}
-          head-sha: ${{ inputs.head_sha }}
-          base-sha: ${{ inputs.base_sha }}
-          target-branch: ${{ inputs.target_branch }}
-          pr-number: ${{ inputs.pr_number }}
-          skip-label: ${{ inputs.skip_label }}
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: studio/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Choose the framework
-        id: framework
-        uses: ./.github/nocobase3/studio-framework
-        with:
-          head-ref: ${{ inputs.head_ref }}
-          github-token: ${{ github.token }}
-
-      - name: Install dependencies
-        working-directory: studio
-        env:
-          INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
-        run: pnpm install "$INSTALL_FLAG"
-
-      - name: ${{ matrix.name }}
-        working-directory: studio
-        run: ${{ matrix.run }}
-
-  # Studio's browser tests (docs/e2e.md in nocobase/studio) against a throwaway Studio the tests start from the build
-  # (dist/server/standalone.js), on SQLite with the demo data and a local mock model. No secrets: the server and the
-  # model are local, and nothing reaches GitHub or a model provider.
-  e2e:
-    name: Studio e2e
-    if: ${{ inputs.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      # The build typechecks Studio and the framework together, which needs more than Node's default heap.
-      NODE_OPTIONS: --max-old-space-size=6144
-    steps:
-      - name: Check out trusted CI helpers
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/nocobase3
-
-      - name: Check out fixed source snapshot
-        uses: ./.github/nocobase3/checkout
-        with:
-          repository: studio
-          path: studio
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          request-id: ${{ inputs.request_id }}
-          event-name: ${{ inputs.event_name }}
-          head-sha: ${{ inputs.head_sha }}
-          base-sha: ${{ inputs.base_sha }}
-          target-branch: ${{ inputs.target_branch }}
-          pr-number: ${{ inputs.pr_number }}
-          skip-label: ${{ inputs.skip_label }}
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: studio/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Choose the framework
-        id: framework
-        uses: ./.github/nocobase3/studio-framework
-        with:
-          head-ref: ${{ inputs.head_ref }}
-          github-token: ${{ github.token }}
-
-      - name: Install dependencies
-        working-directory: studio
-        env:
-          INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
-        run: pnpm install "$INSTALL_FLAG"
-
-      # Builds the workspace packages Studio depends on, then Studio's client and server into dist, with the universal
-      # nb-studio and nocobase-runner packages in dist/runners.
-      - name: Build Studio
-        working-directory: studio
-        run: pnpm build
-
-      - name: Install Chromium
-        working-directory: studio
-        run: pnpm exec playwright install --with-deps chromium
-
-      # The `e2e` Playwright project: every flow in e2e/*.test.ts, the phone flows at iPhone 13 size.
-      - name: Flows
-        working-directory: studio
-        run: pnpm test:e2e
-
-      # The flows' traces and failure screenshots. The `screenshots` Playwright project (`pnpm test:screenshots`)
-      # asserts nothing beyond page errors and is not run on pull requests; run it locally when a change needs it.
-      - name: Upload failed test traces
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: studio-e2e-results
-          path: studio/test-results
-          if-no-files-found: ignore
-          retention-days: 3
-
   # Studio's standard preview workflow (`nb-studio build ci workflows --app directory=. --app appId=studio`), adapted to
   # a run that is neither in nocobase/studio nor started by its pull_request event: every command names the repository
   # and the commit itself, and the logs are this run's. The key is given only to the steps that call Studio, through
