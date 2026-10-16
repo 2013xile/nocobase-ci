@@ -156,6 +156,7 @@ jobs:
           DOCS_ALI_OSS_BUCKET: ${{ secrets.DOCS_ALI_OSS_BUCKET }}
           DOCS_ALI_OSS_REGION: ${{ secrets.DOCS_ALI_OSS_REGION }}
           DOCS_ALI_CDN_DOMAIN: ${{ secrets.DOCS_ALI_CDN_DOMAIN }}
+          DOCS_ALI_CDN_DOMAINS: ${{ vars.DOCS_ALI_CDN_DOMAINS }}
           DOCS_ALI_CDN_REGION: ${{ secrets.DOCS_ALI_CDN_REGION }}
           OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
@@ -231,8 +232,28 @@ jobs:
               ossutil cp docs/dist/404.html oss://$BUCKET/404.html -f --region $REGION
             fi
 
-            # Update CDN rewrite rule, refresh cache, cleanup old versions
-            yarn nocobase docs:update --timestamp $TIMESTAMP
+            # Update CDN rewrite rule, refresh cache, cleanup old versions, once per CDN domain.
+            # DOCS_ALI_CDN_DOMAINS (repository variable) lists every domain served from this bucket, separated by
+            # whitespace or commas; when it is empty, the single DOCS_ALI_CDN_DOMAIN secret is used as before.
+            # Every domain must be updated on each publish: docs:update keeps only the newest timestamp directory, so
+            # a domain left behind would soon point at a deleted directory. Each domain is attempted even if an
+            # earlier one fails, and the step fails afterwards if any of them did.
+            CDN_DOMAINS=$(printf '%s' "${DOCS_ALI_CDN_DOMAINS:-$DOCS_ALI_CDN_DOMAIN}" | tr ',' ' ')
+            UPDATED_COUNT=0
+            FAILED_DOMAINS=""
+            for CDN_DOMAIN in $CDN_DOMAINS; do
+              UPDATED_COUNT=$((UPDATED_COUNT + 1))
+              echo "Updating docs CDN domain: $CDN_DOMAIN"
+              DOCS_ALI_CDN_DOMAIN="$CDN_DOMAIN" yarn nocobase docs:update --timestamp "$TIMESTAMP" || FAILED_DOMAINS="$FAILED_DOMAINS $CDN_DOMAIN"
+            done
+            if [ "$UPDATED_COUNT" -eq 0 ]; then
+              echo "::error::Neither DOCS_ALI_CDN_DOMAINS nor DOCS_ALI_CDN_DOMAIN names a CDN domain"
+              exit 1
+            fi
+            if [ -n "$FAILED_DOMAINS" ]; then
+              echo "::error::docs:update failed for:$FAILED_DOMAINS"
+              exit 1
+            fi
             fi
           fi
 
