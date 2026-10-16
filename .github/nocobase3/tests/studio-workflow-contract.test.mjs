@@ -8,18 +8,9 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 const workflow = readFileSync(path.join(root, '.github/workflows/studio-ci.yml'), 'utf8');
 const proWorkflow = readFileSync(path.join(root, '.github/workflows/nocobase3-pro-ci.yml'), 'utf8');
 
-// The check names nocobase-bot mirrors onto nocobase/studio (STUDIO_CI_CHECK_NAMES there).
-const expectedJobs = [
-  'Submodule pointer',
-  'Lint',
-  'Typecheck',
-  'Test',
-  'API document',
-  'CLI reference',
-  'Studio e2e',
-  'Preview',
-  'Dist',
-];
+// The check names nocobase-bot mirrors onto nocobase/studio from this workflow (STUDIO_CI_CHECK_NAMES there). The others
+// run in studio-quality.yml of the CI repository pool.
+const expectedJobs = ['Preview', 'Dist'];
 
 function job(id) {
   const start = workflow.indexOf(`\n  ${id}:\n`);
@@ -43,12 +34,9 @@ test("takes Pro's dispatch inputs plus the optional head branch, and names its r
   assert.equal(dispatchInputs(workflow).slice(0, -headRef.length), dispatchInputs(proWorkflow));
 });
 
-test('keeps the check job names and their events', () => {
-  const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)];
-  const matrixNames = [...job('check').matchAll(/^          - name: (.+)$/gmu)].map((match) => match[1]);
-  const names = jobs.flatMap(([, , name]) => (name === '${{ matrix.name }}' ? matrixNames : name));
+test('keeps only the check jobs that need its secrets, and their events', () => {
+  const names = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map(([, , name]) => name);
   assert.deepEqual(names, expectedJobs);
-  assert.match(job('e2e'), /if: \$\{\{ inputs\.event_name == 'pull_request' \}\}/u);
   assert.match(job('preview'), /if: \$\{\{ inputs\.event_name == 'pull_request' \}\}/u);
   assert.match(
     job('dist'),
@@ -58,16 +46,14 @@ test('keeps the check job names and their events', () => {
 
 test('checks out only nocobase/studio through the shared checkout action', () => {
   const checkouts = [...workflow.matchAll(/uses: \.\/\.github\/nocobase3\/checkout\n        with:\n          repository: (.+)\n          path: (.+)\n/gu)];
-  assert.equal(checkouts.length, 5);
+  assert.equal(checkouts.length, 2);
   assert.ok(checkouts.every(([, repository, directory]) => repository === 'studio' && directory === 'studio'));
   assert.equal([...workflow.matchAll(/merge-pull-request: 'false'/gu)].length, 1);
   assert.match(job('preview'), /merge-pull-request: 'false'/u);
 });
 
 test('gives the deployment secret only to the preview', () => {
-  for (const id of ['submodule', 'check', 'e2e', 'dist']) {
-    assert.doesNotMatch(job(id), /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY)/u, id);
-  }
+  assert.doesNotMatch(job('dist'), /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY)/u);
   assert.doesNotMatch(workflow, /\bssh\b/u);
   assert.doesNotMatch(workflow, /^ {6}NB_STUDIO_API_KEY:/mu);
 });
@@ -84,18 +70,15 @@ test('names the repository and the commit in every preview call to Studio', () =
   assert.match(job('preview'), /LOGS: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/u);
 });
 
-test('uploads only failed e2e results and the public tarballs, briefly, and caches nothing', () => {
+test('uploads only the public tarballs, briefly, and caches nothing', () => {
   assert.doesNotMatch(workflow, /actions\/cache|^\s+cache:/mu);
   const uploads = [...workflow.matchAll(/- name: .+\n(?:        if: (.+)\n)?        uses: actions\/upload-artifact@v4\n        with:\n(?:          .+\n)*?          retention-days: (\d+)/gu)];
   assert.equal([...workflow.matchAll(/actions\/upload-artifact/gu)].length, uploads.length);
   assert.ok(uploads.every(([, , days]) => days === '3'));
-  const e2e = uploads.filter(([upload]) => job('e2e').includes(upload));
   const dist = uploads.filter(([upload]) => job('dist').includes(upload));
-  assert.equal(e2e.length, 2);
-  assert.ok(e2e.every(([, condition]) => condition === '${{ failure() }}'));
   assert.equal(dist.length, 2);
   assert.ok(dist.every(([upload]) => /path: studio\/output\/dist\/stable\/(nb-studio|nocobase-runner)\n/u.test(upload)));
-  assert.equal(e2e.length + dist.length, uploads.length);
+  assert.equal(dist.length, uploads.length);
 });
 
 test("runs Studio's own scripts with the repository's pnpm, after a full install", () => {
@@ -105,42 +88,20 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
     [...workflow.matchAll(/uses: pnpm\/action-setup@v4/gu)].length,
   );
   // The committed pointer installs from the lockfile; a same-name framework branch may need it resolved again.
-  for (const id of ['check', 'e2e', 'preview']) {
-    assert.match(
-      job(id),
-      /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
-      id,
-    );
-  }
-  assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
-  const runs = Object.fromEntries(
-    [...job('check').matchAll(/^          - name: (.+)\n            run: (.+)$/gmu)].map((match) => [match[1], match[2]]),
+  assert.match(
+    job('preview'),
+    /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
   );
-  assert.deepEqual(runs, {
-    Lint: 'pnpm lint && pnpm format:check',
-    Typecheck: 'pnpm typecheck',
-    Test: 'pnpm test',
-    'API document': 'pnpm openapi:check',
-    'CLI reference': 'pnpm cli-reference:check',
-  });
-  assert.match(job('check'), /run: \$\{\{ matrix\.run \}\}\n/u);
-  assert.match(job('submodule'), /working-directory: studio\n        run: node scripts\/check-submodule\.mjs\n/u);
+  assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
 });
 
-test('builds Studio before its browser tests and keeps both suites apart', () => {
-  const e2e = job('e2e');
-  const order = ['run: pnpm build\n', 'run: pnpm exec playwright install --with-deps chromium\n', 'run: pnpm test:e2e\n', 'run: pnpm test:screenshots\n'];
-  const at = order.map((line) => e2e.indexOf(line));
-  assert.ok(at.every((index) => index !== -1), 'every e2e step');
-  assert.deepEqual([...at].sort((a, b) => a - b), at);
-  assert.match(e2e, /path: studio\/output\/screenshots\n/u);
-  assert.match(e2e, /path: \|\n            studio\/test-results\n            studio\/output\/screenshot-results\n/u);
+test('builds the per-platform tarballs of both products', () => {
   assert.match(job('dist'), /run: pnpm nocobase cli build --out output\/dist\n/u);
   assert.match(job('dist'), /run: pnpm nocobase cli build --runner --out output\/dist\n/u);
 });
 
-test('builds every pull request job on the same-name framework branch when there is one, right after the checkout', () => {
-  for (const id of ['check', 'e2e', 'preview']) {
+test('builds the preview on the same-name framework branch when there is one, right after the checkout', () => {
+  for (const id of ['preview']) {
     const source = job(id);
     const step = source.indexOf('      - name: Choose the framework\n');
     assert.notEqual(step, -1, id);
@@ -153,23 +114,11 @@ test('builds every pull request job on the same-name framework branch when there
     assert.ok(step < source.indexOf('      - name: Install dependencies\n'), id);
   }
   assert.match(job('preview'), /- name: Choose the framework\n        id: framework\n        if: \$\{\{ steps\.gate\.outputs\.skip != 'true' \}\}\n/u);
-  for (const id of ['submodule', 'dist']) assert.doesNotMatch(job(id), /studio-framework\n/u, id);
+  assert.doesNotMatch(job('dist'), /studio-framework\n/u);
 });
 
-test("gates the framework half in a trusted step, before the pull request's own script, which gets no token", () => {
-  const source = job('submodule');
-  const gate = source.indexOf('      - name: Check the framework half has merged\n');
-  const script = source.indexOf('      - name: Check vendor/nocobase3 is reachable from a public branch or tag\n');
-  assert.ok(gate !== -1 && script !== -1 && gate < script);
-  assert.ok(source.indexOf('uses: ./.github/nocobase3/checkout') < gate);
-  assert.match(
-    source.slice(gate, script),
-    /uses: \.\/\.github\/nocobase3\/studio-framework-gate\n        with:\n          head-ref: \$\{\{ inputs\.head_ref \}\}\n          github-token: \$\{\{ github\.token \}\}\n/u,
-  );
-  // The pull request's own code never sees a token, in any job.
-  const ownCode = source.slice(script);
-  assert.doesNotMatch(ownCode, /token|GITHUB_TOKEN|GH_TOKEN|head-branch/u);
-  assert.doesNotMatch(workflow, /GITHUB_TOKEN:|--head-branch/u);
+test("never runs the pull request's code with a token beside it", () => {
+  assert.doesNotMatch(workflow, /GITHUB_TOKEN:|--head-branch|studio-framework-gate/u);
   // The only token in a step's environment is Preview's own label lookup, which runs no pull request code.
   assert.deepEqual([...workflow.matchAll(/GH_TOKEN: (.+)/gu)].map((match) => match[1]), ['${{ steps.pr-token.outputs.token }}']);
 });
