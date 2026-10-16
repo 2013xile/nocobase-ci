@@ -173,3 +173,10 @@ test("gates the framework half in a trusted step, before the pull request's own 
   // The only token in a step's environment is Preview's own label lookup, which runs no pull request code.
   assert.deepEqual([...workflow.matchAll(/GH_TOKEN: (.+)/gu)].map((match) => match[1]), ['${{ steps.pr-token.outputs.token }}']);
 });
+
+test('sets up Node.js before installing the nb-studio CLI, which carries no Node.js of its own', () => {
+  const source = job('preview');
+  const node = source.indexOf('      - name: Set up Node.js\n');
+  const cli = source.indexOf('      - name: Install the nb-studio CLI\n');
+  assert.ok(node !== -1 && cli !== -1 && node < cli);
+});

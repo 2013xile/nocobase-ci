@@ -373,6 +373,20 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      # nb-studio is a launcher that runs on the job's Node.js, so Node.js 24 is set up before it is installed.
+      - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: studio/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Install the nb-studio CLI
         if: ${{ steps.gate.outputs.skip != 'true' }}
         env:
@@ -391,19 +405,6 @@ jobs:
         env:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
-
-      - name: Set up pnpm
-        if: ${{ steps.gate.outputs.skip != 'true' }}
-        uses: pnpm/action-setup@v4
-        with:
-          package_json_file: studio/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        if: ${{ steps.gate.outputs.skip != 'true' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
 
       - name: Choose the framework
         id: framework
@@ -502,8 +503,8 @@ jobs:
         working-directory: studio
         run: pnpm nocobase cli build --runner --out output/dist
 
-      # Both products are public (the runner is @nocobase/agent-runner, nb-studio the branded app-cli-client), so they
-      # are kept briefly for a look. The image studio-image.yml builds carries its own copy.
+      # Kept briefly for a look (the runner is the public @nocobase/agent-runner, nb-studio Studio's private CLI). The
+      # image studio-image.yml builds carries its own copy.
       - name: Upload the nb-studio tarballs
         uses: actions/upload-artifact@v4
         with:
