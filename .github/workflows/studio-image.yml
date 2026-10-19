@@ -2,9 +2,10 @@ name: Studio image
 run-name: studio-image:${{ inputs.ref }}
 
 # Builds NocoBase Studio's internal image from the private nocobase/studio repository, from any branch, tag or commit,
-# and pushes it to the internal registry. Studio is the repository root and the framework is the public submodule
-# vendor/nocobase3; nb-studio's brand package is packages/studio-cli. Studio's long-lived branches mirror
-# nocobase/nocobase's: `dev` tracks `v3-develop` and `main` tracks `v3-main`. Studio's,
+# and pushes it to the internal registry as one image for linux/amd64 and linux/arm64: each platform builds its own
+# dist/ and image in parallel, and a last job tags both under one multi-platform manifest. Studio is the repository root
+# and the framework is the public submodule vendor/nocobase3; nb-studio's brand package is packages/studio-cli. Studio's
+# long-lived branches mirror nocobase/nocobase's: `dev` tracks `v3-develop` and `main` tracks `v3-main`. Studio's,
 # nb-studio's (`@nocobase/studio-cli`) and the runner's (`@nocobase/agent-runner`, in the submodule) versions are first
 # stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners and CLIs
 # see the build as newer and upgrade. Studio's own `pnpm build` then packs the universal `nb-studio` and
@@ -38,10 +39,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Resolves the ref once, so both platforms build the same commit even if the branch moves during the run, and names
+  # the tags and the dev version stamp both platforms share.
+  prepare:
+    name: Resolve the commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      sha: ${{ steps.tags.outputs.sha }}
+      tags: ${{ steps.tags.outputs.tags }}
+      stamp: ${{ steps.tags.outputs.stamp }}
+    steps:
+      # A read-only token for nocobase/studio alone, revoked as soon as the ref is resolved.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: studio
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Resolve the ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          commit=$(gh api "repos/nocobase/studio/commits/${REF}" --jq .sha)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      # dev-<short sha>, and the moving tag of a long-lived branch: dev for dev, main for main. Tag names only: an
+      # output holding the registry, a secret, would be dropped on its way to the other jobs.
+      - name: Name the tags
+        id: tags
+        env:
+          COMMIT: ${{ steps.resolve.outputs.commit }}
+          REF: ${{ inputs.ref }}
+        run: |
+          sha=${COMMIT:0:7}
+          tags="dev-${sha}"
+          case "$REF" in
+            dev | main) tags=$(printf '%s\n%s' "$tags" "$REF") ;;
+          esac
+          {
+            echo "sha=${sha}"
+            echo "stamp=$(date -u +%Y%m%d%H%M%S)"
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # Each platform builds its own dist/ and pushes its image by digest, in parallel; `manifest` then tags both as one.
+  # Both run on x64: `pnpm build --target linux-arm64` fetches the arm64 native binaries rather than compiling under
+  # emulation, and QEMU only runs the arm64 image's last few RUN lines.
   image:
-    name: Build and push the Studio image
+    name: Build the linux/${{ matrix.arch }} image
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            target: linux-x64
+          - arch: arm64
+            target: linux-arm64
+    outputs:
+      # The same on both platforms: one commit, one stamp.
+      versions: ${{ steps.stamp.outputs.versions }}
     env:
       # Studio's build typechecks it together with the framework's sources, which needs more than the default heap.
       NODE_OPTIONS: --max-old-space-size=6144
@@ -63,7 +144,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nocobase/studio
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.prepare.outputs.commit }}
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
           submodules: true
@@ -80,26 +161,6 @@ jobs:
             --header "Authorization: Bearer $APP_TOKEN" \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
-
-      # dev-<short sha>, and the moving tag of a long-lived branch: dev for dev, main for main.
-      - name: Name the tags
-        id: tags
-        env:
-          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          REF: ${{ inputs.ref }}
-        run: |
-          image="${REGISTRY}/nocobase/studio"
-          sha=$(git rev-parse --short=7 HEAD)
-          tags=$(printf '%s:dev-%s' "$image" "$sha")
-          case "$REF" in
-            dev | main) tags=$(printf '%s\n%s:%s' "$tags" "$image" "$REF") ;;
-          esac
-          {
-            echo "sha=${sha}"
-            echo "tags<<EOF"
-            echo "$tags"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -120,11 +181,14 @@ jobs:
       # version, so runners and CLIs see the build as newer than the release it is based on and upgrade. Before
       # `pnpm build`, which records these versions and packs nb-studio and the runner at them. 1.0.0-beta.51 becomes
       # 1.0.0-beta.51.dev.<UTC YYYYMMDDHHMMSS>, which sorts above it and below 1.0.0-beta.52; a version without a
-      # prerelease part takes -dev.<timestamp>. The checkout is changed, never the repository.
+      # prerelease part takes -dev.<timestamp>. The timestamp comes from `prepare`, so both platforms carry the same
+      # versions. The checkout is changed, never the repository.
       - name: Stamp dev versions
         id: stamp
+        env:
+          STAMP: ${{ needs.prepare.outputs.stamp }}
         run: |
-          stamp=$(date -u +%Y%m%d%H%M%S)
+          stamp=${STAMP:?no timestamp to stamp}
           stamped=
           for manifest in package.json packages/studio-cli/package.json vendor/nocobase3/packages/app/agent-runner/package.json; do
             version=$(jq -r '.version // empty' "$manifest")
@@ -149,9 +213,66 @@ jobs:
 
       # dist/ is built here, with this job's heap, and the image takes it prebuilt. Studio's build first builds the
       # workspace packages it depends on, and dist/ includes dist/runners, the nb-studio and nocobase-runner packages
-      # Studio serves.
-      - name: Build dist for linux-x64
-        run: pnpm build --target linux-x64
+      # Studio serves. `--target` swaps in the native binaries of the image's platform; the Dockerfile refuses a dist/
+      # built for another one.
+      - name: Build dist
+        run: pnpm build --target ${{ matrix.target }}
+
+      - name: Sign in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+
+      - name: Set up QEMU
+        if: ${{ matrix.arch != 'amd64' }}
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.arch }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Pushed by digest alone; the tags go on the multi-platform manifest.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: DIST=prebuilt
+          outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio,push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: Tag the multi-platform image
+    needs: [prepare, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Sign in to the registry
         uses: docker/login-action@v3
@@ -163,30 +284,36 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          build-args: DIST=prebuilt
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          provenance: false
+      - name: Tag and push the manifest
+        env:
+          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          DIGESTS: ${{ runner.temp }}/digests
+        run: |
+          image="${REGISTRY}/nocobase/studio"
+          args=()
+          while IFS= read -r tag; do
+            args+=(--tag "${image}:${tag}")
+          done <<< "$TAGS"
+          for digest in "$DIGESTS"/*; do
+            args+=("${image}@sha256:$(basename "$digest")")
+          done
+          docker buildx imagetools create "${args[@]}"
+          docker buildx imagetools inspect "${image}:$(head -n 1 <<< "$TAGS")"
 
       - name: Summary
         env:
-          TAGS: ${{ steps.tags.outputs.tags }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
           REF: ${{ inputs.ref }}
-          SHA: ${{ steps.tags.outputs.sha }}
-          VERSIONS: ${{ steps.stamp.outputs.versions }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          VERSIONS: ${{ needs.image.outputs.versions }}
         run: |
           {
             echo '### Studio image'
             echo
-            echo "Built \`${REF}\` (\`${SHA}\`), serving the nb-studio and runner packages its build packed."
+            echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64 and linux/arm64, serving the nb-studio and runner packages its build packed."
             echo
-            printf '%s\n' "$TAGS" | sed 's/^.*\//- `/; s/$/`/'
+            printf '%s\n' "$TAGS" | sed 's/^/- `nocobase\/studio:/; s/$/`/'
             if [ -n "$VERSIONS" ]; then
               echo
               echo 'Stamped versions:'
