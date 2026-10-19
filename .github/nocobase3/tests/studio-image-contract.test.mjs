@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,11 +9,21 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const workflow = readFileSync(path.join(root, '.github/workflows/studio-image.yml'), 'utf8');
 
-function step(name) {
-  const start = workflow.indexOf(`      - name: ${name}\n`);
+// The text of one job, from its key to the next job's.
+function job(id) {
+  const start = workflow.indexOf(`\n  ${id}:\n`);
+  assert.notEqual(start, -1, `job ${id}`);
+  const next = workflow.slice(start + 1).search(/\n  [a-z-]+:\n/u);
+  return next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+}
+
+// A step of the job `in` (the whole workflow by default), up to the next step or job.
+function step(name, { in: source = workflow } = {}) {
+  const start = source.indexOf(`      - name: ${name}\n`);
   assert.notEqual(start, -1, `step ${name}`);
-  const next = workflow.indexOf('\n      - name: ', start + 1);
-  return next === -1 ? workflow.slice(start) : workflow.slice(start, next);
+  const rest = source.slice(start + 1);
+  const next = rest.search(/\n      - name: |\n  [a-z-]+:\n/u);
+  return next === -1 ? source.slice(start) : source.slice(start, start + 1 + next);
 }
 
 // The shell of a `run: |` block, unindented.
@@ -28,41 +38,31 @@ function script(name) {
     .join('\n');
 }
 
-// Runs the tag step in a throwaway repository whose Studio manifest has `version`.
-function nameTags({ version, ref = 'dev' }) {
+const commit = '0123abcdef0123abcdef0123abcdef0123abcdef';
+const sha = commit.slice(0, 7);
+
+// Runs the tag step for the resolved commit and returns the tag names and stamp it wrote.
+function nameTags({ ref = 'dev' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-image-'));
   try {
-    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
-    git('init', '-q');
-    if (version !== undefined) {
-      writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@nocobase/studio', version }));
-    }
-    git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'fixture');
-    const sha = git('rev-parse', '--short=7', 'HEAD').toString().trim();
     const output = path.join(dir, 'output');
     writeFileSync(output, '');
     const result = spawnSync('bash', ['-e', '-c', script('Name the tags')], {
       cwd: dir,
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        REGISTRY: 'registry.example.com',
-        REF: ref,
-        GITHUB_OUTPUT: output,
-      },
+      env: { ...process.env, COMMIT: commit, REF: ref, GITHUB_OUTPUT: output },
     });
     const text = readFileSync(output, 'utf8');
     const tags = text.includes('tags<<EOF\n') ? text.split('tags<<EOF\n')[1].split('\nEOF')[0].split('\n') : [];
-    return { status: result.status, stdout: result.stdout, sha, tags };
+    const value = (key) => new RegExp(`^${key}=(.*)$`, 'mu').exec(text)?.[1];
+    return { status: result.status, sha: value('sha'), stamp: value('stamp'), tags };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-const image = 'registry.example.com/nocobase/studio';
-
 // Runs the stamp step against manifests at `versions` and returns what it wrote and reported.
-function stampVersions(versions) {
+function stampVersions(versions, { stamp = '20261019081500' } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-stamp-'));
   const manifests = {
     '@nocobase/studio': '.',
@@ -82,7 +82,7 @@ function stampVersions(versions) {
     const result = spawnSync('bash', ['-e', '-c', script('Stamp dev versions')], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, GITHUB_OUTPUT: output },
+      env: { ...process.env, STAMP: stamp, GITHUB_OUTPUT: output },
     });
     const written = Object.fromEntries(
       Object.entries(manifests).map(([name, directory]) => [
@@ -107,43 +107,62 @@ test('takes the ref to build, and no release mode', () => {
 });
 
 test('tags a build of dev dev-<short sha> and dev', () => {
-  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59' });
-  assert.equal(status, 0);
-  assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:dev`]);
+  const result = nameTags();
+  assert.equal(result.status, 0);
+  assert.equal(result.sha, sha);
+  assert.deepEqual(result.tags, [`dev-${sha}`, 'dev']);
+  assert.match(result.stamp, /^\d{14}$/u);
 });
 
 test('gives main its own moving tag, so it never replaces dev', () => {
-  const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59', ref: 'main' });
+  const { status, tags } = nameTags({ ref: 'main' });
   assert.equal(status, 0);
-  assert.deepEqual(tags, [`${image}:dev-${sha}`, `${image}:main`]);
+  assert.deepEqual(tags, [`dev-${sha}`, 'main']);
 });
 
 test('tags a build of any other ref dev-<short sha> alone, so it moves neither dev nor main', () => {
   for (const ref of ['feat/anything', 'agent/PM-42', 'v3-develop', 'main-backup', 'dev-1', '0123abc']) {
-    const { status, sha, tags } = nameTags({ version: '1.0.0-beta.59', ref });
+    const { status, tags } = nameTags({ ref });
     assert.equal(status, 0);
-    assert.deepEqual(tags, [`${image}:dev-${sha}`], ref);
+    assert.deepEqual(tags, [`dev-${sha}`], ref);
   }
+});
+
+test('names tags without the registry, which as a secret would drop the output on its way to other jobs', () => {
+  assert.doesNotMatch(step('Name the tags'), /REGISTRY/u);
+  assert.doesNotMatch(job('prepare'), /secrets\.ALI_DOCKER_REGISTRY/u);
+  assert.match(job('prepare'), /      tags: \$\{\{ steps\.tags\.outputs\.tags \}\}\n/u);
 });
 
 test('checks out the private nocobase/studio at the ref, with its submodule, through a read-only token it revokes', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /description: Branch, tag or commit of nocobase\/studio to build\.\n/u);
   assert.match(inputs, /default: dev\n/u);
-  const token = step('Create a read-only source token');
-  assert.match(token, /app-id: \$\{\{ vars\.NOCOBASE_APP_ID \}\}\n/u);
-  assert.match(token, /private-key: \$\{\{ secrets\.NOCOBASE_APP_PRIVATE_KEY \}\}\n/u);
-  assert.match(token, /owner: nocobase\n          repositories: studio\n          permission-contents: read\n/u);
-  const checkout = step('Check out Studio');
-  assert.match(checkout, /repository: nocobase\/studio\n          ref: \$\{\{ inputs\.ref \}\}\n/u);
+  for (const id of ['prepare', 'image']) {
+    const source = job(id);
+    const token = step('Create a read-only source token', { in: source });
+    assert.match(token, /app-id: \$\{\{ vars\.NOCOBASE_APP_ID \}\}\n/u, id);
+    assert.match(token, /private-key: \$\{\{ secrets\.NOCOBASE_APP_PRIVATE_KEY \}\}\n/u, id);
+    assert.match(token, /owner: nocobase\n          repositories: studio\n          permission-contents: read\n/u, id);
+    const revoke = step('Revoke the source token', { in: source });
+    assert.match(revoke, /if: \$\{\{ always\(\) && steps\.app-token\.outputs\.token != '' \}\}\n/u, id);
+    assert.match(revoke, /--request DELETE/u, id);
+  }
+  // `prepare` resolves the ref once, and every platform checks that commit out, so a branch that moves during the run
+  // cannot give the platforms different sources.
+  assert.match(step('Resolve the ref'), /REF: \$\{\{ inputs\.ref \}\}\n/u);
+  assert.match(step('Resolve the ref'), /gh api "repos\/nocobase\/studio\/commits\/\$\{REF\}" --jq \.sha/u);
+  const image = job('image');
+  assert.match(image, /    needs: prepare\n/u);
+  const checkout = step('Check out Studio', { in: image });
+  assert.match(checkout, /repository: nocobase\/studio\n          ref: \$\{\{ needs\.prepare\.outputs\.commit \}\}\n/u);
   assert.match(checkout, /token: \$\{\{ steps\.app-token\.outputs\.token \}\}\n/u);
   assert.match(checkout, /persist-credentials: false\n/u);
   assert.match(checkout, /submodules: true\n/u);
-  const revoke = step('Revoke the source token');
-  assert.match(revoke, /if: \$\{\{ always\(\) && steps\.app-token\.outputs\.token != '' \}\}\n/u);
-  assert.match(revoke, /--request DELETE/u);
   // Revoked before any of Studio's own code runs.
-  assert.ok(workflow.indexOf(revoke) < workflow.indexOf(step('Install dependencies')));
+  assert.ok(
+    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Install dependencies', { in: image })),
+  );
   const code = workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
   assert.doesNotMatch(code, /nocobase\/nocobase\b(?!-ci)|packages\/apps\/studio|packages\/tools\/studio-cli/u);
 });
@@ -158,17 +177,39 @@ test('builds at the repository root with the pnpm of its packageManager', () => 
 test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
   // `pnpm build` packs nb-studio and the runner into dist/runners; nothing builds or copies them separately.
   assert.doesNotMatch(workflow, /cli build|runners-dist/u);
-  assert.match(step('Build dist for linux-x64'), /run: pnpm build --target linux-x64\n/u);
+  assert.match(step('Build dist'), /run: pnpm build --target \$\{\{ matrix\.target \}\}\n/u);
   assert.match(step('Build and push'), /build-args: DIST=prebuilt\n/u);
 });
 
-test('pushes the image and lists the tags in the summary', () => {
+test('builds linux/amd64 and linux/arm64 in parallel, each from a dist/ built for its own platform', () => {
+  const image = job('image');
+  assert.match(
+    image,
+    /        include:\n          - arch: amd64\n            target: linux-x64\n          - arch: arm64\n            target: linux-arm64\n/u,
+  );
+  assert.match(step('Build and push'), /platforms: linux\/\$\{\{ matrix\.arch \}\}\n/u);
+  // The arm64 image's RUN lines need emulation on the x64 runner; amd64 does not.
+  assert.match(step('Set up QEMU'), /if: \$\{\{ matrix\.arch != 'amd64' \}\}\n/u);
+  assert.ok(image.indexOf(step('Set up QEMU')) < image.indexOf(step('Build and push')));
+});
+
+test('pushes each platform by digest and tags them under one multi-platform manifest', () => {
   const push = step('Build and push');
-  assert.doesNotMatch(push, /if:/u);
-  assert.match(push, /build-args: DIST=prebuilt\n/u);
-  assert.match(push, /tags: \$\{\{ steps\.tags\.outputs\.tags \}\}\n/u);
-  assert.match(step('Summary'), /TAGS: \$\{\{ steps\.tags\.outputs\.tags \}\}/u);
-  assert.match(step('Summary'), /GITHUB_STEP_SUMMARY/u);
+  assert.doesNotMatch(push, /if:|tags:|push: true/u);
+  assert.match(push, /outputs: type=image,name=\$\{\{ secrets\.ALI_DOCKER_REGISTRY \}\}\/nocobase\/studio,push-by-digest=true,name-canonical=true,push=true\n/u);
+  assert.match(step('Upload the digest'), /name: digest-\$\{\{ matrix\.arch \}\}\n/u);
+  const manifest = job('manifest');
+  assert.match(manifest, /    needs: \[prepare, image\]\n/u);
+  assert.match(step('Download the digests', { in: manifest }), /pattern: digest-\*\n          merge-multiple: true\n/u);
+  const tag = step('Tag and push the manifest', { in: manifest });
+  assert.match(tag, /TAGS: \$\{\{ needs\.prepare\.outputs\.tags \}\}\n/u);
+  assert.match(tag, /docker buildx imagetools create "\$\{args\[@\]\}"/u);
+});
+
+test('lists the tags in the summary', () => {
+  const summary = step('Summary', { in: job('manifest') });
+  assert.match(summary, /TAGS: \$\{\{ needs\.prepare\.outputs\.tags \}\}/u);
+  assert.match(summary, /GITHUB_STEP_SUMMARY/u);
 });
 
 test('stamps dev versions on Studio, nb-studio and the runner before anything is built', () => {
@@ -176,7 +217,10 @@ test('stamps dev versions on Studio, nb-studio and the runner before anything is
   assert.doesNotMatch(stamp, /        if:/u);
   const at = workflow.indexOf(stamp);
   assert.ok(at > workflow.indexOf(step('Install dependencies')));
-  assert.ok(at < workflow.indexOf(step('Build dist for linux-x64')));
+  assert.ok(at < workflow.indexOf(step('Build dist')));
+  // One timestamp from `prepare`, so both platforms carry the same versions.
+  assert.match(stamp, /STAMP: \$\{\{ needs\.prepare\.outputs\.stamp \}\}\n/u);
+  assert.doesNotMatch(stamp, /date /u);
 });
 
 test('appends .dev.<UTC timestamp> to a prerelease and -dev.<timestamp> to a plain version', () => {
@@ -189,10 +233,9 @@ test('appends .dev.<UTC timestamp> to a prerelease and -dev.<timestamp> to a pla
   const studio = written['@nocobase/studio'].version;
   const cli = written['@nocobase/studio-cli'].version;
   const runner = written['@nocobase/agent-runner'].version;
-  const match = /^1\.0\.0-beta\.51\.dev\.(\d{14})$/u.exec(studio);
-  assert.ok(match, studio);
-  assert.equal(cli, `0.1.0-beta.2.dev.${match[1]}`);
-  assert.equal(runner, `0.1.0-dev.${match[1]}`);
+  assert.equal(studio, '1.0.0-beta.51.dev.20261019081500');
+  assert.equal(cli, '0.1.0-beta.2.dev.20261019081500');
+  assert.equal(runner, '0.1.0-dev.20261019081500');
   assert.deepEqual(reported, [`@nocobase/studio@${studio}`, `@nocobase/studio-cli@${cli}`, `@nocobase/agent-runner@${runner}`]);
   assert.equal(written['@nocobase/studio'].private, false, 'other manifest fields are kept');
 });
@@ -206,8 +249,17 @@ test('fails the stamp when a manifest has no version', () => {
   assert.notEqual(status, 0);
 });
 
+test('fails the stamp without a timestamp from prepare', () => {
+  const { status } = stampVersions(
+    { '@nocobase/studio': '1.0.0-beta.51', '@nocobase/studio-cli': '0.1.0', '@nocobase/agent-runner': '0.1.0' },
+    { stamp: '' },
+  );
+  assert.notEqual(status, 0);
+});
+
 test('prints the stamped versions in the summary', () => {
+  assert.match(job('image'), /      versions: \$\{\{ steps\.stamp\.outputs\.versions \}\}\n/u);
   const summary = step('Summary');
-  assert.match(summary, /VERSIONS: \$\{\{ steps\.stamp\.outputs\.versions \}\}/u);
+  assert.match(summary, /VERSIONS: \$\{\{ needs\.image\.outputs\.versions \}\}/u);
   assert.match(summary, /Stamped versions:/u);
 });
