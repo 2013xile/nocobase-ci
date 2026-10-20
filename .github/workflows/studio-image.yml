@@ -13,9 +13,8 @@ run-name: studio-image:${{ inputs.ref }}
 # carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>`, plus the moving tag of the
 # branch: `dev` when `ref` is `dev`, `main` when it is `main`. A build of any other ref moves neither.
 #
-# Every image includes the private QA plugin pinned by .github/nocobase3/studio-qa-image.json. Bot dispatches need
-# no additional input. Build the resolved current Studio commit, never the preview profile's old Studio revision.
-# Normal dev/main tags and an additional immutable qa-<Studio SHA>-p<plugin SHA> tag all contain that plugin.
+# The private testing workspace package is part of the Studio source checkout. Require it before installing; never
+# fall back to a separate private-source overlay or publish a normal image missing QA.
 #
 # Studio is no longer released to public registries: this internal image is the only one.
 #
@@ -34,11 +33,6 @@ on:
         required: true
         default: dev
         type: string
-      qa_plugin_sha:
-        description: Optional override of the pinned QA plugin SHA; empty uses the normal image plugin revision.
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -55,31 +49,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      plugin: ${{ steps.plugin.outputs.sha }}
       commit: ${{ steps.resolve.outputs.commit }}
       sha: ${{ steps.tags.outputs.sha }}
       tags: ${{ steps.tags.outputs.tags }}
       stamp: ${{ steps.tags.outputs.stamp }}
     steps:
-      - name: Check out trusted image configuration
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: .github/nocobase3
-
-      - name: Select the QA plugin revision
-        id: plugin
-        env:
-          QA_PLUGIN_SHA: ${{ inputs.qa_plugin_sha }}
-        run: |
-          plugin=${QA_PLUGIN_SHA:-$(jq -er '.revision' .github/nocobase3/studio-qa-image.json)}
-          if [[ ! "$plugin" =~ ^[0-9a-f]{40}$ ]]; then
-            echo '::error::Studio images require a full lowercase 40-character QA plugin SHA.'
-            exit 1
-          fi
-          echo "sha=$plugin" >> "$GITHUB_OUTPUT"
-
       # A read-only token for nocobase/studio alone, revoked as soon as the ref is resolved.
       - name: Create a read-only source token
         id: app-token
@@ -120,18 +94,12 @@ jobs:
         env:
           COMMIT: ${{ steps.resolve.outputs.commit }}
           REF: ${{ inputs.ref }}
-          QA_PLUGIN_SHA: ${{ steps.plugin.outputs.sha }}
         run: |
           sha=${COMMIT:0:7}
           tags="dev-${sha}"
-          if [[ ! "$QA_PLUGIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo '::error::Studio images require a pinned QA plugin SHA.'
-            exit 1
-          fi
           case "$REF" in
             dev | main) tags=$(printf '%s\n%s' "$tags" "$REF") ;;
           esac
-          tags=$(printf '%s\n%s' "$tags" "qa-${COMMIT}-p${QA_PLUGIN_SHA}")
           {
             echo "sha=${sha}"
             echo "stamp=$(date -u +%Y%m%d%H%M%S)"
@@ -155,9 +123,6 @@ jobs:
             target: linux-x64
           - arch: arm64
             target: linux-arm64
-    defaults:
-      run:
-        working-directory: studio
     outputs:
       # The same on both platforms: one commit, one stamp.
       versions: ${{ steps.stamp.outputs.versions }}
@@ -165,28 +130,57 @@ jobs:
       # Studio's build typechecks it together with the framework's sources, which needs more than the default heap.
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
-      # Keep private source outside the Docker context. The helper revokes its token before assembly.
-      - name: Check out trusted CI helpers
-        uses: actions/checkout@v4
+      # A read-only token for nocobase/studio alone, revoked as soon as the source is checked out.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
         with:
-          repository: 2013xile/nocobase-ci
-          ref: ${{ github.sha }}
-          path: .ci
-          persist-credentials: false
-
-      - name: Check out and assemble the QA image profile
-        uses: ./.ci/.github/nocobase3/studio-qa-checkout
-        with:
-          studio-sha: ${{ needs.prepare.outputs.commit }}
-          plugin-sha: ${{ needs.prepare.outputs.plugin }}
-          assembly: image
           app-id: ${{ vars.NOCOBASE_APP_ID }}
           private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: studio
+          permission-contents: read
+          skip-token-revoke: true
+
+      # The framework is the public submodule vendor/nocobase3; only Studio itself needs the token.
+      - name: Check out Studio
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/studio
+          ref: ${{ needs.prepare.outputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+          submodules: true
+          show-progress: false
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Require the in-repository testing package
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const app = JSON.parse(readFileSync('package.json', 'utf8'));
+          const testing = JSON.parse(readFileSync('packages/app-plugin-testing/package.json', 'utf8'));
+          if (app.dependencies?.['@nocobase/app-plugin-testing'] !== 'workspace:*' ||
+              testing.name !== '@nocobase/app-plugin-testing' || testing.private !== true) {
+            throw new Error('Studio images require the private in-repository testing package.');
+          }
+          NODE
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          package_json_file: studio/package.json
+          package_json_file: package.json
           run_install: false
 
       - name: Set up Node.js
@@ -194,11 +188,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: studio/pnpm-lock.yaml
-
-      - name: Add only the QA workspace lock entries
-        working-directory: .
-        run: node .ci/.github/nocobase3/prepare-studio-image.mjs lock studio qa-source "$RUNNER_TEMP/studio-qa-base-lock.yaml"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -265,8 +254,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: studio
-          file: studio/Dockerfile
+          context: .
+          file: Dockerfile
           platforms: linux/${{ matrix.arch }}
           build-args: DIST=prebuilt
           outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio,push-by-digest=true,name-canonical=true,push=true
@@ -333,7 +322,6 @@ jobs:
           REF: ${{ inputs.ref }}
           SHA: ${{ needs.prepare.outputs.sha }}
           VERSIONS: ${{ needs.image.outputs.versions }}
-          QA_PLUGIN_SHA: ${{ needs.prepare.outputs.plugin }}
         run: |
           {
             echo '### Studio image'
@@ -341,10 +329,6 @@ jobs:
             echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64 and linux/arm64, serving the nb-studio and runner packages its build packed."
             echo
             printf '%s\n' "$TAGS" | sed 's/^/- `nocobase\/studio:/; s/$/`/'
-            if [ -n "$QA_PLUGIN_SHA" ]; then
-              echo
-              echo "Private QA plugin: \`${QA_PLUGIN_SHA}\`. All published image tags include this plugin. The running server was not changed."
-            fi
             if [ -n "$VERSIONS" ]; then
               echo
               echo 'Stamped versions:'
