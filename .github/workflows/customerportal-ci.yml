@@ -1,0 +1,199 @@
+name: CustomerPortal CI
+run-name: customerportal-ci:${{ inputs.request_id }}
+
+# The pull request preview of the private nocobase/CustomerPortal repository, which needs this repository's secrets,
+# dispatched by nocobase-bot (docs/ci-forwarding.md there), which mirrors the job below as a check run of the same name
+# on nocobase/CustomerPortal. The job name is that protocol. The bot forwards every pull request from a branch of the
+# repository itself, whatever its target, never a fork's and never a push: the preview runs the pull request's code next
+# to the Studio key.
+#
+# CustomerPortal is a NocoBase 3 application at the repository root. `Preview` deploys the pull request's head to its
+# own App `customerportal-pr-<n>` in Studio's `preview` environment, as the workflow Studio generated in the repository
+# did (`nb-studio-customerportal-preview.yml`), which this replaces.
+#
+# This repository is public: nothing uploads CustomerPortal's source or its application build, and nothing is cached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: UUID shared with the source-repository check runs.
+        required: true
+        type: string
+      event_name:
+        description: Source event type (pull_request or push).
+        required: true
+        type: string
+      head_sha:
+        description: Immutable 40-character source head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable 40-character base SHA, or forty zeroes for the first push.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch.
+        required: true
+        type: string
+      pr_number:
+        description: Positive pull request number, or 0 for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source pull request has the no-preview label (true or false).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: customerportal-ci-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  # Studio's standard preview workflow, adapted to a run that is neither in nocobase/CustomerPortal nor started by its
+  # pull_request event: every command names the repository and the commit itself, and the logs are this run's. The key
+  # is the CI key Studio keeps for nocobase/CustomerPortal, which may name only that repository, given only to the steps
+  # that call Studio, through NB_STUDIO_API_KEY rather than a stored login.
+  preview:
+    name: Preview
+    if: ${{ inputs.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
+      REPOSITORY: nocobase/CustomerPortal
+      HEAD_SHA: ${{ inputs.head_sha }}
+      APP_ID: customerportal-pr-${{ inputs.pr_number }}
+      ENVIRONMENT: preview
+      LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      # The pull request's head itself, not a merge: Studio verifies the commit it deploys is the pull request's head.
+      - name: Check out fixed pull request head
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: CustomerPortal
+          path: customerportal
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+
+      # A pull request that carries the `no-preview` label, or changes nothing the application runs (only documentation,
+      # tests, e2e or CI files), gets no preview: the job ends here and Studio is told nothing. The bot passes the label as
+      # skip_label; the labels are read again in case it changed since.
+      - name: Read the pull request's labels
+        id: pr-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: CustomerPortal
+          permission-pull-requests: read
+
+      - name: Decide whether to preview
+        id: gate
+        env:
+          GH_TOKEN: ${{ steps.pr-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: |
+          skip() {
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "### Preview skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            echo "Preview skipped: $1"
+          }
+          if [ "$SKIP_LABEL" = 'true' ] || gh api "repos/$REPOSITORY/issues/$PR_NUMBER/labels" --jq '.[].name' | grep -qx 'no-preview'; then
+            skip "The pull request has the \`no-preview\` label."
+            exit 0
+          fi
+          base=$(git -C customerportal merge-base "$BASE_SHA" "$HEAD_SHA")
+          runtime=$(git -C customerportal diff --name-only "$base" "$HEAD_SHA" | grep -viE '^(docs/|tests/|e2e/|\.github/)|\.md$' || true)
+          if [ -z "$runtime" ]; then
+            skip 'It changes only documentation, tests, e2e or CI files.'
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: customerportal/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The CLI Studio serves carries no Node.js and runs on the one set up above (Node.js 24 or newer).
+      - name: Install the nb-studio CLI
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
+        run: |
+          eval "$(curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER/api/agents/dist/products/nb-studio/targets/linux-x64?format=env")"
+          mkdir -p "$RUNNER_TEMP/nb-studio"
+          curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/nb-studio"
+          echo "$RUNNER_TEMP/nb-studio/bin" >> "$GITHUB_PATH"
+          # A command the CLI derives from the server's manifest (app ensure, deploy) fetches that manifest with the
+          # stored sign-in, not with NB_STUDIO_API_KEY, so the CLI signs in with the key as Studio's generated workflow does.
+          printf %s "$NB_STUDIO_API_KEY" | NB_STUDIO_KEYCHAIN=off "$RUNNER_TEMP/nb-studio/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
+
+      - name: Report the build
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
+
+      # The pnpm version is the repository's own `packageManager`.
+      - name: Install dependencies
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        working-directory: customerportal
+        run: pnpm install --frozen-lockfile
+
+      # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
+      - name: Build the deployment archive
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        working-directory: customerportal
+        run: pnpm build --target linux-x64 --tar
+
+      # The pull request's own App: Studio records the pull request as its source and removes it once it goes.
+      - name: Ensure the pull request's App
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
+        run: nb-studio app ensure "$APP_ID" --environment "$ENVIRONMENT" --repository "$REPOSITORY"
+
+      # Uploads the archive and deploys it; a protected environment asks its approvers instead.
+      - name: Deploy
+        if: ${{ steps.gate.outputs.skip != 'true' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
+        run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file customerportal/storage/exports/dist.tar.gz
+
+      - name: Report the failure
+        if: ${{ failure() && steps.gate.outputs.skip == 'false' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"

@@ -5,7 +5,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/iu;
 const ZERO_SHA = '0'.repeat(40);
 const NOCOBASE_STACKED_TARGET_PATTERN = /^[^/]+\/v3-[^/]+$/u;
 // The repositories nocobase-bot forwards; the checkout token is limited to the one named.
-export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase'];
+export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase', 'CustomerPortal'];
 export const OSS_TARGET_BRANCHES = {
   nocobase: ['v3-develop', 'v3-main'],
 };
