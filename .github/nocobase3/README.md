@@ -57,6 +57,14 @@ NocoBase Studio itself is no longer in `nocobase/nocobase`, so this workflow has
 
 The archived `nocobase/nocobase3` is no longer previewed; its Apps and its `NB_STUDIO_API_KEY_NOCOBASE3` secret were removed. `validate-inputs.mjs` still accepts `nocobase3` as a checkout source because older Pro commits' `vendor/nocobase3` submodule points there.
 
+## CustomerPortal preview
+
+`customerportal-ci.yml` gives pull requests of the private `nocobase/CustomerPortal` a preview, replacing the workflow Studio generated in that repository (`nb-studio-customerportal-preview.yml`). `nocobase-bot` dispatches it with the seven forwarded inputs, `skip_label` carrying the `no-preview` label, for every pull request from a branch of the repository whatever its target, never a fork's or a push; its run name is `customerportal-ci:<request_id>` and its one job, `Preview`, is the check name on `nocobase/CustomerPortal`.
+
+- It checks out the pull request's head (not a merge) through the shared `checkout` action with `repository: CustomerPortal` into `customerportal`, with a read-only token limited to that repository. It ends without telling Studio anything when the pull request has the `no-preview` label (from `skip_label` or read again from the pull request) or changes only documentation, tests, e2e or CI files.
+- Otherwise it installs with the pnpm of the repository's `packageManager` on Node.js 24, runs `pnpm build --target linux-x64 --tar` at the repository root, and deploys `storage/exports/dist.tar.gz` to the App `customerportal-pr-<n>` in Studio's `preview` environment, naming `--repository nocobase/CustomerPortal` and `--sha <head_sha>` in every call. Studio removes the App once the pull request is merged or closed.
+- It needs the secret `CUSTOMERPORTAL_NB_STUDIO_API_KEY` and the variable `NB_STUDIO_URL`. The key is the CI key Studio keeps for `nocobase/CustomerPortal`, which may name only that repository (`REPOSITORY_MISMATCH` otherwise), revealed once with `nb-studio build ci setup nocobase/CustomerPortal --reveal --json | jq -er .result.data.secret | gh secret set CUSTOMERPORTAL_NB_STUDIO_API_KEY -R 2013xile/nocobase-ci`; Studio then no longer rotates it, so rotate it the same way before it expires. The key is given only to the steps that call Studio, never to the install or the build. Nothing is cached or uploaded.
+
 ## Existing workflow behavior
 
 The v1/v2 image, plugin publishing and auto-merge workflows are unchanged. No new preflight job or branch allowlist is added to them, and custom image-build targets retain their existing behavior.
@@ -80,7 +88,7 @@ node --test .github/nocobase3/tests/*.test.mjs
 Lint the workflows with:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/studio-image.yml
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/customerportal-ci.yml .github/workflows/studio-image.yml
 ```
 
 
