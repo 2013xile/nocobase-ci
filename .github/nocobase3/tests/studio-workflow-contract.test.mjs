@@ -30,8 +30,14 @@ test("takes Pro's dispatch inputs plus the optional head branch, and names its r
         default: ''
         type: string
 `;
-  assert.ok(dispatchInputs(workflow).endsWith(headRef));
-  assert.equal(dispatchInputs(workflow).slice(0, -headRef.length), dispatchInputs(proWorkflow));
+  const qaInput = `      qa_plugin_sha:
+        description: Optional full private QA plugin SHA for an isolated manual preview; empty preserves normal CI.
+        required: false
+        default: ''
+        type: string
+`;
+  assert.ok(dispatchInputs(workflow).endsWith(headRef + qaInput));
+  assert.equal(dispatchInputs(workflow).slice(0, -(headRef.length + qaInput.length)), dispatchInputs(proWorkflow));
 });
 
 test('keeps only the check jobs that need its secrets, and their events', () => {
@@ -40,7 +46,7 @@ test('keeps only the check jobs that need its secrets, and their events', () => 
   assert.match(job('preview'), /if: \$\{\{ inputs\.event_name == 'pull_request' \}\}/u);
   assert.match(
     job('dist'),
-    /if: \$\{\{ inputs\.event_name == 'push' && \(inputs\.target_branch == 'dev' \|\| inputs\.target_branch == 'main'\) \}\}/u,
+    /if: \$\{\{ inputs\.qa_plugin_sha == '' && inputs\.event_name == 'push' && \(inputs\.target_branch == 'dev' \|\| inputs\.target_branch == 'main'\) \}\}/u,
   );
 });
 
@@ -65,7 +71,7 @@ test('names the repository and the commit in every preview call to Studio', () =
   for (const call of calls.filter((call) => !call.startsWith('nb-studio app ensure'))) {
     assert.match(call, /--sha "\$HEAD_SHA"/u, call);
   }
-  assert.match(job('preview'), /APP_ID: studio-pr-\$\{\{ inputs\.pr_number \}\}/u);
+  assert.match(job('preview'), /APP_ID: \$\{\{ inputs\.qa_plugin_sha != '' && format\('studio-qa-preview-\{0\}', github\.run_id\) \|\| format\('studio-pr-\{0\}', inputs\.pr_number\) \}\}/u);
   assert.match(job('preview'), /ENVIRONMENT: preview/u);
   assert.match(job('preview'), /LOGS: \$\{\{ github\.server_url \}\}\/\$\{\{ github\.repository \}\}\/actions\/runs\/\$\{\{ github\.run_id \}\}/u);
 });
@@ -90,7 +96,7 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
   // The committed pointer installs from the lockfile; a same-name framework branch may need it resolved again.
   assert.match(
     job('preview'),
-    /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
+    /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$\{INSTALL_FLAG:---frozen-lockfile\}"\n/u,
   );
   assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
 });
@@ -113,7 +119,7 @@ test('builds the preview on the same-name framework branch when there is one, ri
     assert.ok(source.indexOf('uses: ./.github/nocobase3/checkout') < step, id);
     assert.ok(step < source.indexOf('      - name: Install dependencies\n'), id);
   }
-  assert.match(job('preview'), /- name: Choose the framework\n        id: framework\n        if: \$\{\{ steps\.gate\.outputs\.skip != 'true' \}\}\n/u);
+  assert.match(job('preview'), /- name: Choose the framework\n        id: framework\n        if: \$\{\{ inputs\.qa_plugin_sha == '' && steps\.gate\.outputs\.skip != 'true' \}\}\n/u);
   assert.doesNotMatch(job('dist'), /studio-framework\n/u);
 });
 
