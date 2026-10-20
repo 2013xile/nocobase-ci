@@ -18,6 +18,7 @@ runs:
   steps:
     - name: Validate fixed revisions
       shell: bash
+      working-directory: ${{ github.workspace }}
       env:
         STUDIO_SHA: ${{ inputs.studio-sha }}
         PLUGIN_SHA: ${{ inputs.plugin-sha }}
@@ -66,6 +67,7 @@ runs:
     - name: Revoke the profile token
       if: ${{ always() && steps.source-token.outputs.token != '' }}
       shell: bash
+      working-directory: ${{ github.workspace }}
       env:
         APP_TOKEN: ${{ steps.source-token.outputs.token }}
       run: |
@@ -78,6 +80,7 @@ runs:
 
     - name: Assemble the verified private profile
       shell: bash
+      working-directory: ${{ github.workspace }}
       run: |
         node qa-source/scripts/prepare-studio-preview.mjs studio --check
         node qa-source/scripts/prepare-studio-preview.mjs studio --apply

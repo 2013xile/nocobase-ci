@@ -88,4 +88,20 @@ gh workflow run studio-ci.yml -R 2013xile/nocobase-ci --ref <reviewed-ci-branch>
   -f qa_plugin_sha=<fixed-private-plugin-sha>
 ```
 
-`pr_number=0` here is just the legacy required dispatch field: the opt-in path performs no PR label lookup or shared forwarded-checkout validation. Ordinary forwarded pull requests continue to require their actual PR number. An empty `qa_plugin_sha` never enters this path. Workflow dispatch runs the reviewed branch before merge; it does not require changing the default branch or merging a CI PR first. `studio-image.yml` remains unchanged. A successful preview is evidence for that fixed two-repository profile, not a production release or a completed historical-data migration.
+`pr_number=0` here is just the legacy required dispatch field: the opt-in path performs no PR label lookup or shared forwarded-checkout validation. Ordinary forwarded pull requests continue to require their actual PR number. An empty `qa_plugin_sha` never enters this path. Workflow dispatch runs the reviewed branch before merge; it does not require changing the default branch or merging a CI PR first. A successful preview is evidence for that fixed two-repository profile, not a production release or a completed historical-data migration.
+
+
+### Opt-in private QA image
+
+`studio-image.yml` also accepts `qa_plugin_sha` (empty by default). Ordinary bot dispatches and builds keep their source checkout, tags, version stamping and image behavior. A QA dispatch resolves the Studio `ref` once, requires the exact Studio revision in the selected private profile, and uses the same temporary-token, checksum and frozen-lock assembly as the validated preview on both architectures. CI helpers are checked out at the workflow revision; Studio, helpers and private plugin source are separate directories, and only the Studio directory is the Docker build context.
+
+QA runs use their own concurrency group and publish only `qa-<full-studio-sha>-p<full-plugin-sha>` to the existing internal `nocobase/studio` image repository. They never move `dev`, `main` or an ordinary `dev-<sha>` tag. The image carries the plugin and its database migrations, not local business data or credentials. This workflow builds and publishes an image; it does not update the running server. The deployment owner must select the QA image tag while retaining the existing configuration and storage, back up data before migrations and verify the updated service.
+
+After merging the CI change, explicitly dispatch the image workflow with the same two revisions already validated in the preview:
+
+```bash
+gh workflow run studio-image.yml -R 2013xile/nocobase-ci --ref main \
+  -f ref=<profile-studio-sha> -f qa_plugin_sha=<fixed-private-plugin-sha>
+```
+
+Merging this CI repository alone does not trigger a Studio source push or an image build. No additional credential is needed when the existing GitHub App already reads both private repositories and the existing image workflow can push to the internal registry.

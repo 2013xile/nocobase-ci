@@ -1,5 +1,5 @@
 name: Studio image
-run-name: studio-image:${{ inputs.ref }}
+run-name: studio-image:${{ inputs.ref }}${{ inputs.qa_plugin_sha != '' && format(':qa-{0}', inputs.qa_plugin_sha) || '' }}
 
 # Builds NocoBase Studio's internal image from the private nocobase/studio repository, from any branch, tag or commit,
 # and pushes it to the internal registry as one image for linux/amd64 and linux/arm64: each platform builds its own
@@ -12,6 +12,9 @@ run-name: studio-image:${{ inputs.ref }}
 # `nocobase-runner` packages, which carry no Node.js, at those versions into dist/runners, which the prebuilt image
 # carries, so Studio serves the CLI and runner it was built with. Tagged `dev-<short sha>`, plus the moving tag of the
 # branch: `dev` when `ref` is `dev`, `main` when it is `main`. A build of any other ref moves neither.
+#
+# An optional qa_plugin_sha assembles the same verified private profile as the QA preview. It publishes only
+# qa-<full Studio SHA>-p<full plugin SHA>, never dev/main or the ordinary dev-<short SHA> tag.
 #
 # Studio is no longer released to public registries: this internal image is the only one.
 #
@@ -30,12 +33,17 @@ on:
         required: true
         default: dev
         type: string
+      qa_plugin_sha:
+        description: Optional full private QA plugin SHA; requires its exact Studio profile revision and publishes only a separate QA tag.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: studio-image-${{ inputs.ref }}
+  group: studio-image-${{ inputs.ref }}${{ inputs.qa_plugin_sha != '' && format('-qa-{0}', inputs.qa_plugin_sha) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -91,12 +99,21 @@ jobs:
         env:
           COMMIT: ${{ steps.resolve.outputs.commit }}
           REF: ${{ inputs.ref }}
+          QA_PLUGIN_SHA: ${{ inputs.qa_plugin_sha }}
         run: |
           sha=${COMMIT:0:7}
           tags="dev-${sha}"
-          case "$REF" in
-            dev | main) tags=$(printf '%s\n%s' "$tags" "$REF") ;;
-          esac
+          if [ -n "$QA_PLUGIN_SHA" ]; then
+            if [[ ! "$QA_PLUGIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::QA images require a full lowercase 40-character plugin SHA.'
+              exit 1
+            fi
+            tags="qa-${COMMIT}-p${QA_PLUGIN_SHA}"
+          else
+            case "$REF" in
+              dev | main) tags=$(printf '%s\n%s' "$tags" "$REF") ;;
+            esac
+          fi
           {
             echo "sha=${sha}"
             echo "stamp=$(date -u +%Y%m%d%H%M%S)"
@@ -120,6 +137,9 @@ jobs:
             target: linux-x64
           - arch: arm64
             target: linux-arm64
+    defaults:
+      run:
+        working-directory: ${{ inputs.qa_plugin_sha != '' && 'studio' || '.' }}
     outputs:
       # The same on both platforms: one commit, one stamp.
       versions: ${{ steps.stamp.outputs.versions }}
@@ -129,6 +149,7 @@ jobs:
     steps:
       # A read-only token for nocobase/studio alone, revoked as soon as the source is checked out.
       - name: Create a read-only source token
+        if: ${{ inputs.qa_plugin_sha == '' }}
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -141,6 +162,7 @@ jobs:
 
       # The framework is the public submodule vendor/nocobase3; only Studio itself needs the token.
       - name: Check out Studio
+        if: ${{ inputs.qa_plugin_sha == '' }}
         uses: actions/checkout@v4
         with:
           repository: nocobase/studio
@@ -151,6 +173,7 @@ jobs:
           show-progress: false
 
       - name: Revoke the source token
+        working-directory: .
         if: ${{ always() && steps.app-token.outputs.token != '' }}
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -162,10 +185,29 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
 
+      # Keep private source outside the Docker context. The helper revokes its token before assembly.
+      - name: Check out trusted CI helpers
+        if: ${{ inputs.qa_plugin_sha != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: 2013xile/nocobase-ci
+          ref: ${{ github.sha }}
+          path: .ci
+          persist-credentials: false
+
+      - name: Check out and assemble the QA image profile
+        if: ${{ inputs.qa_plugin_sha != '' }}
+        uses: ./.ci/.github/nocobase3/studio-qa-checkout
+        with:
+          studio-sha: ${{ needs.prepare.outputs.commit }}
+          plugin-sha: ${{ inputs.qa_plugin_sha }}
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          package_json_file: package.json
+          package_json_file: ${{ inputs.qa_plugin_sha != '' && 'studio/package.json' || 'package.json' }}
           run_install: false
 
       - name: Set up Node.js
@@ -173,6 +215,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: ${{ inputs.qa_plugin_sha != '' && 'studio/pnpm-lock.yaml' || 'pnpm-lock.yaml' }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -239,8 +282,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile
+          context: ${{ inputs.qa_plugin_sha != '' && 'studio' || '.' }}
+          file: ${{ inputs.qa_plugin_sha != '' && 'studio/Dockerfile' || 'Dockerfile' }}
           platforms: linux/${{ matrix.arch }}
           build-args: DIST=prebuilt
           outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio,push-by-digest=true,name-canonical=true,push=true
@@ -307,6 +350,7 @@ jobs:
           REF: ${{ inputs.ref }}
           SHA: ${{ needs.prepare.outputs.sha }}
           VERSIONS: ${{ needs.image.outputs.versions }}
+          QA_PLUGIN_SHA: ${{ inputs.qa_plugin_sha }}
         run: |
           {
             echo '### Studio image'
@@ -314,6 +358,10 @@ jobs:
             echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64 and linux/arm64, serving the nb-studio and runner packages its build packed."
             echo
             printf '%s\n' "$TAGS" | sed 's/^/- `nocobase\/studio:/; s/$/`/'
+            if [ -n "$QA_PLUGIN_SHA" ]; then
+              echo
+              echo "Private QA plugin: \`${QA_PLUGIN_SHA}\`. Only the immutable QA tag was published; no dev/main tag or running server was changed."
+            fi
             if [ -n "$VERSIONS" ]; then
               echo
               echo 'Stamped versions:'
