@@ -62,11 +62,6 @@ on:
         required: false
         default: ''
         type: string
-      qa_plugin_sha:
-        description: Optional full private QA plugin SHA for an isolated manual preview; empty preserves normal CI.
-        required: false
-        default: ''
-        type: string
 
 permissions:
   contents: read
@@ -90,20 +85,18 @@ jobs:
       NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
       REPOSITORY: nocobase/studio
       HEAD_SHA: ${{ inputs.head_sha }}
-      APP_ID: ${{ inputs.qa_plugin_sha != '' && format('studio-qa-preview-{0}', github.run_id) || format('studio-pr-{0}', inputs.pr_number) }}
+      APP_ID: studio-pr-${{ inputs.pr_number }}
       ENVIRONMENT: preview
       LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
           sparse-checkout: .github/nocobase3
 
       # The pull request's head itself, not a merge: Studio verifies the commit it deploys is the pull request's head.
       - name: Check out fixed pull request head
-        if: ${{ inputs.qa_plugin_sha == '' }}
         uses: ./.github/nocobase3/checkout
         with:
           repository: studio
@@ -119,20 +112,9 @@ jobs:
           skip-label: ${{ inputs.skip_label }}
           merge-pull-request: 'false'
 
-      # Manual QA profiles use fixed commits and a separate preview App. Ordinary forwarded CI never takes this path.
-      - name: Check out and assemble the QA preview profile
-        if: ${{ inputs.qa_plugin_sha != '' }}
-        uses: ./.github/nocobase3/studio-qa-checkout
-        with:
-          studio-sha: ${{ inputs.head_sha }}
-          plugin-sha: ${{ inputs.qa_plugin_sha }}
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-
       # A pull request that changes nothing the app runs (only documentation, tests, e2e or CI files), or that carries
       # the `no-preview` label, gets no preview: the job ends here and Studio is told nothing, so nothing waits for it.
       - name: Read the pull request's labels
-        if: ${{ inputs.qa_plugin_sha == '' }}
         id: pr-token
         uses: actions/create-github-app-token@v2
         with:
@@ -143,7 +125,6 @@ jobs:
           permission-pull-requests: read
 
       - name: Decide whether to preview
-        if: ${{ inputs.qa_plugin_sha == '' }}
         id: gate
         env:
           GH_TOKEN: ${{ steps.pr-token.outputs.token }}
@@ -203,7 +184,7 @@ jobs:
 
       - name: Choose the framework
         id: framework
-        if: ${{ inputs.qa_plugin_sha == '' && steps.gate.outputs.skip != 'true' }}
+        if: ${{ steps.gate.outputs.skip != 'true' }}
         uses: ./.github/nocobase3/studio-framework
         with:
           head-ref: ${{ inputs.head_ref }}
@@ -214,7 +195,7 @@ jobs:
         working-directory: studio
         env:
           INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
-        run: pnpm install "${INSTALL_FLAG:---frozen-lockfile}"
+        run: pnpm install "$INSTALL_FLAG"
 
       # Leaves storage/exports/dist.tar.gz: dist/ and config.example.yml.
       - name: Build the deployment archive
@@ -236,21 +217,6 @@ jobs:
           NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY }}
         run: nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file studio/storage/exports/dist.tar.gz
 
-      - name: Summarize the QA preview
-        if: ${{ inputs.qa_plugin_sha != '' }}
-        env:
-          QA_SHA: ${{ inputs.qa_plugin_sha }}
-        run: |
-          {
-            echo '### Isolated Studio QA preview'
-            echo
-            echo "Studio commit: \`$HEAD_SHA\`"
-            echo "Private plugin commit: \`$QA_SHA\`"
-            echo "App: \`$APP_ID\` in \`$ENVIRONMENT\`"
-            echo
-            echo 'This run does not build or publish a production image and does not update the production Studio.'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Report the failure
         if: ${{ failure() }}
         env:
@@ -262,7 +228,7 @@ jobs:
   # product with its own manifest.
   dist:
     name: Dist
-    if: ${{ inputs.qa_plugin_sha == '' && inputs.event_name == 'push' && (inputs.target_branch == 'dev' || inputs.target_branch == 'main') }}
+    if: ${{ inputs.event_name == 'push' && (inputs.target_branch == 'dev' || inputs.target_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
