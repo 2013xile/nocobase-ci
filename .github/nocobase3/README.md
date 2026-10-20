@@ -28,7 +28,21 @@ Studio's other checks, `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API do
 
 ## NocoBase Studio image
 
-`studio-image.yml` builds Studio's internal image from the private `nocobase/studio` at a `ref` (any branch, tag or commit) and pushes it to the internal registry. It checks out the repository root with its `vendor/nocobase3` submodule through a read-only installation token of the GitHub App (`vars.NOCOBASE_APP_ID`, `secrets.NOCOBASE_APP_PRIVATE_KEY`) limited to `nocobase/studio`, and revokes the token before anything is installed. Studio's (`package.json`), `@nocobase/studio-cli`'s (`packages/studio-cli`) and `@nocobase/agent-runner`'s (`vendor/nocobase3/packages/app/agent-runner`) versions are stamped in the checkout to `<version>.dev.<UTC YYYYMMDDHHMMSS>` (`<version>-dev.<timestamp>` without a prerelease part) so runners and CLIs see the build as newer and upgrade; then Studio's own `pnpm build` packs the universal `nb-studio` and `nocobase-runner` packages (no bundled Node.js) at those versions into `dist/runners/`, which the prebuilt image carries and Studio serves. Tagged `dev-<short sha>`, plus `dev` when `ref` is `dev` and `main` when it is `main`; a build of any other ref moves neither. `nocobase-bot` dispatches it with `ref` set to the branch for every push to `nocobase/studio`'s `dev` or `main`, and a newer push to the same branch cancels the build in progress. Studio has no public image any more.
+`studio-image.yml` builds Studio's internal image from the private `nocobase/studio` at a `ref` (any branch, tag or commit). Every normal image includes the QA plugin pinned in `.github/nocobase3/studio-qa-image.json`; bot dispatches need no additional parameter. A plugin update changes that reviewed immutable revision, rather than following a moving private branch. The optional `qa_plugin_sha` input overrides that pin explicitly; leaving it empty does not omit QA.
+
+The workflow resolves the current Studio ref and the plugin revision once for both architectures. Through `studio-qa-checkout` with `assembly: image`, it checks out both sources without persisted credentials using a temporary contents-read GitHub App token, revokes the token, verifies the private source content hash and applies the plugin's normal installer. It never substitutes the old Studio commit in the isolated preview profile. The installer refuses overwriting unmanaged host changes or migration history.
+
+After pnpm and Node are configured, `prepare-studio-image.mjs` resolves the QA workspace importer with scripts disabled and copies only that importer and its root dependency link onto the original lockfile. pnpm may normalize unrelated transitive peers while resolving; those unrelated changes are discarded. A byte comparison proves every existing Studio dependency resolution remains unchanged. Frozen offline lock validation and the normal frozen dependency install must pass before compilation. An unavailable or incompatible plugin fails the build: there is no fallback that silently publishes an image without QA. Helpers and private source remain outside the Studio Docker context.
+
+Studio's, CLI's and Runner's versions are stamped as before; Studio's own build packs its CLI/Runner and the image carries them. Both linux/amd64 and linux/arm64 are built and published through the existing internal registry. Existing `dev-<short Studio SHA>`, `dev` and `main` tags keep their original meaning, and all contain QA. An additional `qa-<full Studio SHA>-p<full plugin SHA>` tag identifies the exact two-source combination. Branch dispatch concurrency and ordinary deployment entry points are unchanged.
+
+`nocobase-bot` dispatches a build for every push to Studio's dev/main branches. Manual builds use the same default plugin path:
+
+```bash
+gh workflow run studio-image.yml -R 2013xile/nocobase-ci -f ref=dev
+```
+
+Publishing the image does not update a running server. The deployment owner continues selecting the normal branch tag/digest through the existing deployment procedure, preserving configuration, database and storage. Plugin migrations ship in the image; local business records, test scripts, accounts and credentials are not copied. Database backups and migration verification follow the normal deployment policy. Removing the plugin from Studio remains a deliberate installer unregister/dependency-removal operation; an ordinary rebuild no longer removes it by accident.
 
 ## NocoBase 3 preview
 
@@ -91,17 +105,6 @@ gh workflow run studio-ci.yml -R 2013xile/nocobase-ci --ref <reviewed-ci-branch>
 `pr_number=0` here is just the legacy required dispatch field: the opt-in path performs no PR label lookup or shared forwarded-checkout validation. Ordinary forwarded pull requests continue to require their actual PR number. An empty `qa_plugin_sha` never enters this path. Workflow dispatch runs the reviewed branch before merge; it does not require changing the default branch or merging a CI PR first. A successful preview is evidence for that fixed two-repository profile, not a production release or a completed historical-data migration.
 
 
-### Opt-in private QA image
+### Default private QA image delivery
 
-`studio-image.yml` also accepts `qa_plugin_sha` (empty by default). Ordinary bot dispatches and builds keep their source checkout, tags, version stamping and image behavior. A QA dispatch resolves the Studio `ref` once, requires the exact Studio revision in the selected private profile, and uses the same temporary-token, checksum and frozen-lock assembly as the validated preview on both architectures. CI helpers are checked out at the workflow revision; Studio, helpers and private plugin source are separate directories, and only the Studio directory is the Docker build context.
-
-QA runs use their own concurrency group and publish only `qa-<full-studio-sha>-p<full-plugin-sha>` to the existing internal `nocobase/studio` image repository. They never move `dev`, `main` or an ordinary `dev-<sha>` tag. The image carries the plugin and its database migrations, not local business data or credentials. This workflow builds and publishes an image; it does not update the running server. The deployment owner must select the QA image tag while retaining the existing configuration and storage, back up data before migrations and verify the updated service.
-
-After merging the CI change, explicitly dispatch the image workflow with the same two revisions already validated in the preview:
-
-```bash
-gh workflow run studio-image.yml -R 2013xile/nocobase-ci --ref main \
-  -f ref=<profile-studio-sha> -f qa_plugin_sha=<fixed-private-plugin-sha>
-```
-
-Merging this CI repository alone does not trigger a Studio source push or an image build. No additional credential is needed when the existing GitHub App already reads both private repositories and the existing image workflow can push to the internal registry.
+Production image delivery is described above under NocoBase Studio image. It uses the current Studio revision and the reviewed QA revision by default. The manual isolated preview profile below/above remains an exact two-repository snapshot for reproducible preview validation, and is not used to pin future production builds to an old Studio commit.

@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const workflow = readFileSync(path.join(root, '.github/workflows/studio-image.yml'), 'utf8');
+const pin = JSON.parse(readFileSync(path.join(root, '.github/nocobase3/studio-qa-image.json'), 'utf8'));
 
 // The text of one job, from its key to the next job's.
 function job(id) {
@@ -40,9 +41,10 @@ function script(name) {
 
 const commit = '0123abcdef0123abcdef0123abcdef0123abcdef';
 const sha = commit.slice(0, 7);
+const qaTag = `qa-${commit}-p${pin.revision}`;
 
 // Runs the tag step for the resolved commit and returns the tag names and stamp it wrote.
-function nameTags({ ref = 'dev', plugin = '' } = {}) {
+function nameTags({ ref = 'dev', plugin = pin.revision } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studio-image-'));
   try {
     const output = path.join(dir, 'output');
@@ -102,29 +104,29 @@ test('takes the ref to build, and no release mode', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /      ref:\n(?:        .+\n)*?        required: true\n(?:        .+\n)*?        type: string\n/u);
   assert.doesNotMatch(workflow, /inputs\.release|      release:/u);
-  assert.match(workflow, /^run-name: studio-image:\$\{\{ inputs\.ref \}\}\$\{\{ inputs\.qa_plugin_sha != ''/mu);
-  assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}\$\{\{ inputs\.qa_plugin_sha != '' && format\('-qa-\{0\}', inputs\.qa_plugin_sha\) \|\| '' \}\}/u);
+  assert.match(workflow, /^run-name: studio-image:\$\{\{ inputs\.ref \}\}$/mu);
+  assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}\n/u);
 });
 
 test('tags a build of dev dev-<short sha> and dev', () => {
   const result = nameTags();
   assert.equal(result.status, 0);
   assert.equal(result.sha, sha);
-  assert.deepEqual(result.tags, [`dev-${sha}`, 'dev']);
+  assert.deepEqual(result.tags, [`dev-${sha}`, 'dev', qaTag]);
   assert.match(result.stamp, /^\d{14}$/u);
 });
 
 test('gives main its own moving tag, so it never replaces dev', () => {
   const { status, tags } = nameTags({ ref: 'main' });
   assert.equal(status, 0);
-  assert.deepEqual(tags, [`dev-${sha}`, 'main']);
+  assert.deepEqual(tags, [`dev-${sha}`, 'main', qaTag]);
 });
 
-test('tags a build of any other ref dev-<short sha> alone, so it moves neither dev nor main', () => {
+test('tags a build of any other ref without moving dev or main', () => {
   for (const ref of ['feat/anything', 'agent/PM-42', 'v3-develop', 'main-backup', 'dev-1', '0123abc']) {
     const { status, tags } = nameTags({ ref });
     assert.equal(status, 0);
-    assert.deepEqual(tags, [`dev-${sha}`], ref);
+    assert.deepEqual(tags, [`dev-${sha}`, qaTag], ref);
   }
 });
 
@@ -134,45 +136,29 @@ test('names tags without the registry, which as a secret would drop the output o
   assert.match(job('prepare'), /      tags: \$\{\{ steps\.tags\.outputs\.tags \}\}\n/u);
 });
 
-test('checks out the private nocobase/studio at the ref, with its submodule, through a read-only token it revokes', () => {
-  const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
-  assert.match(inputs, /description: Branch, tag or commit of nocobase\/studio to build\.\n/u);
-  assert.match(inputs, /default: dev\n/u);
-  for (const id of ['prepare', 'image']) {
-    const source = job(id);
-    const token = step('Create a read-only source token', { in: source });
-    assert.match(token, /app-id: \$\{\{ vars\.NOCOBASE_APP_ID \}\}\n/u, id);
-    assert.match(token, /private-key: \$\{\{ secrets\.NOCOBASE_APP_PRIVATE_KEY \}\}\n/u, id);
-    assert.match(token, /owner: nocobase\n          repositories: studio\n          permission-contents: read\n/u, id);
-    const revoke = step('Revoke the source token', { in: source });
-    assert.match(revoke, /if: \$\{\{ always\(\) && steps\.app-token\.outputs\.token != '' \}\}\n/u, id);
-    assert.match(revoke, /--request DELETE/u, id);
-  }
-  // `prepare` resolves the ref once, and every platform checks that commit out, so a branch that moves during the run
-  // cannot give the platforms different sources.
-  assert.match(step('Resolve the ref'), /REF: \$\{\{ inputs\.ref \}\}\n/u);
+test('resolves the current Studio source and always checks out the pinned private QA source', () => {
+  const source = job('prepare');
+  const token = step('Create a read-only source token', { in: source });
+  assert.match(token, /owner: nocobase\n          repositories: studio\n          permission-contents: read/u);
+  assert.match(step('Revoke the source token', { in: source }), /--request DELETE/u);
   assert.match(step('Resolve the ref'), /gh api "repos\/nocobase\/studio\/commits\/\$\{REF\}" --jq \.sha/u);
   const image = job('image');
-  assert.match(image, /    needs: prepare\n/u);
-  const checkout = step('Check out Studio', { in: image });
-  assert.match(checkout, /repository: nocobase\/studio\n          ref: \$\{\{ needs\.prepare\.outputs\.commit \}\}\n/u);
-  assert.match(checkout, /token: \$\{\{ steps\.app-token\.outputs\.token \}\}\n/u);
-  assert.match(checkout, /persist-credentials: false\n/u);
-  assert.match(checkout, /submodules: true\n/u);
-  // Revoked before any of Studio's own code runs.
-  assert.ok(
-    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Install dependencies', { in: image })),
-  );
-  const code = workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
-  assert.doesNotMatch(code, /nocobase\/nocobase\b(?!-ci)|packages\/apps\/studio|packages\/tools\/studio-cli/u);
+  const checkout = step('Check out and assemble the QA image profile', { in: image });
+  assert.doesNotMatch(checkout, /if:/u);
+  assert.match(checkout, /studio-sha: \$\{\{ needs\.prepare\.outputs\.commit \}\}/u);
+  assert.match(checkout, /plugin-sha: \$\{\{ needs\.prepare\.outputs\.plugin \}\}\n          assembly: image/u);
+  assert.doesNotMatch(image, /repository: nocobase\/studio\n|Check out Studio\n/u);
 });
 
-test('builds at the repository root with the pnpm of its packageManager', () => {
-  assert.match(step('Set up pnpm'), /package_json_file: \$\{\{ inputs\.qa_plugin_sha != '' && 'studio\/package\.json' \|\| 'package\.json' \}\}/u);
+test('builds at the Studio repository root with its pnpm and a frozen final install', () => {
+  assert.match(step('Set up pnpm'), /package_json_file: studio\/package\.json\n/u);
+  assert.match(job('image'), /defaults:\n      run:\n        working-directory: studio/u);
   assert.doesNotMatch(workflow, /--filter|NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD/u);
-  assert.match(job('image'), /working-directory: \$\{\{ inputs\.qa_plugin_sha != '' && 'studio' \|\| '\.' \}\}/u);
+  const lock = step('Add only the QA workspace lock entries');
+  assert.match(lock, /working-directory: \.\n/u);
+  assert.ok(workflow.indexOf(lock) < workflow.indexOf(step('Install dependencies')));
   assert.match(step('Install dependencies'), /run: pnpm install --frozen-lockfile\n/u);
-  assert.match(step('Build and push'), /context: \$\{\{ inputs\.qa_plugin_sha != '' && 'studio' \|\| '\.' \}\}\n          file: \$\{\{ inputs\.qa_plugin_sha != '' && 'studio\/Dockerfile' \|\| 'Dockerfile' \}\}/u);
+  assert.match(step('Build and push'), /context: studio\n          file: studio\/Dockerfile\n/u);
 });
 
 test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
@@ -266,33 +252,31 @@ test('prints the stamped versions in the summary', () => {
 });
 
 
-test('QA tags identify both immutable source revisions without replacing ordinary tags', () => {
+test('QA is required on every published tag, including normal branch builds', () => {
   const plugin = 'abcdef0123'.repeat(4);
   for (const ref of ['dev', 'main', commit]) {
     const result = nameTags({ ref, plugin });
     assert.equal(result.status, 0);
-    assert.deepEqual(result.tags, [`qa-${commit}-p${plugin}`]);
+    const expected = [`dev-${sha}`, ...(ref === 'dev' || ref === 'main' ? [ref] : []), `qa-${commit}-p${plugin}`];
+    assert.deepEqual(result.tags, expected);
   }
-  for (const plugin of ['main', 'ABCDEF0123abcdef0123abcdef0123abcdef0123ab', 'a'.repeat(39), 'a'.repeat(41), 'bad\nsha']) {
+  for (const plugin of ['', 'main', 'ABCDEF0123abcdef0123abcdef0123abcdef0123ab', 'a'.repeat(39), 'a'.repeat(41), 'bad\nsha']) {
     assert.notEqual(nameTags({ plugin }).status, 0);
   }
 });
 
-test('QA image assembly is opt-in, profile checked before installation, and scoped outside its Docker context', () => {
+test('normal dispatches select the committed QA revision without a plugin input or floating private branch', () => {
+  assert.equal(pin.repository, 'nocobase/studio-plugin-testing');
+  assert.match(pin.revision, /^[0-9a-f]{40}$/u);
+  const select = step('Select the QA plugin revision');
+  assert.doesNotMatch(select, /if:/u);
+  assert.match(select, /studio-qa-image\.json/u);
+  assert.match(job('prepare'), /plugin: \$\{\{ steps\.plugin\.outputs\.sha \}\}/u);
   const image = job('image');
-  assert.match(workflow, /qa_plugin_sha:\n[^]*?required: false\n        default: ''/u);
-  for (const name of ['Create a read-only source token', 'Check out Studio']) {
-    assert.match(step(name, { in: image }), /if: \$\{\{ inputs\.qa_plugin_sha == '' \}\}/u);
-  }
   const helpers = step('Check out trusted CI helpers', { in: image });
-  assert.match(helpers, /if: \$\{\{ inputs\.qa_plugin_sha != '' \}\}/u);
+  assert.doesNotMatch(helpers, /if:/u);
   assert.match(helpers, /ref: \$\{\{ github\.sha \}\}\n          path: \.ci\n          persist-credentials: false/u);
-  const profile = step('Check out and assemble the QA image profile', { in: image });
-  assert.match(profile, /if: \$\{\{ inputs\.qa_plugin_sha != '' \}\}/u);
-  assert.match(profile, /uses: \.\/\.ci\/\.github\/nocobase3\/studio-qa-checkout/u);
-  assert.match(profile, /studio-sha: \$\{\{ needs\.prepare\.outputs\.commit \}\}/u);
-  assert.match(profile, /plugin-sha: \$\{\{ inputs\.qa_plugin_sha \}\}/u);
-  assert.ok(image.indexOf(profile) < image.indexOf(step('Install dependencies', { in: image })));
-  assert.match(step('Set up Node.js'), /cache-dependency-path: \$\{\{ inputs\.qa_plugin_sha != '' && 'studio\/pnpm-lock\.yaml' \|\| 'pnpm-lock\.yaml' \}\}/u);
+  assert.doesNotMatch(image, /if:.*qa_plugin_sha|continue-on-error/u);
+  assert.match(step('Set up Node.js'), /cache-dependency-path: studio\/pnpm-lock\.yaml/u);
   assert.doesNotMatch(workflow, /ssh |docker compose|nb-studio deploy/u);
 });

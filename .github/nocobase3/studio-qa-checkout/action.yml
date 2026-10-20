@@ -1,8 +1,12 @@
-name: Check out the fixed QA preview profile
-description: Read only Studio and its private QA plugin, revoke the token, then assemble the pinned preview profile.
+name: Check out fixed Studio and QA source
+description: Read only Studio and its private QA plugin, revoke the token, then assemble a preview profile or the current image source.
 inputs:
+  assembly:
+    description: Use profile for an exact preview, or image for a current Studio image with additive workspace locking.
+    required: false
+    default: profile
   studio-sha:
-    description: Immutable Studio commit matching the private release profile.
+    description: Immutable Studio commit to build; profile assembly additionally requires its exact saved revision.
     required: true
   plugin-sha:
     description: Immutable private QA plugin commit.
@@ -22,10 +26,15 @@ runs:
       env:
         STUDIO_SHA: ${{ inputs.studio-sha }}
         PLUGIN_SHA: ${{ inputs.plugin-sha }}
+        ASSEMBLY: ${{ inputs.assembly }}
       run: |
+        if [[ "$ASSEMBLY" != profile && "$ASSEMBLY" != image ]]; then
+          echo '::error::Unsupported QA source assembly mode.'
+          exit 1
+        fi
         for revision in "$STUDIO_SHA" "$PLUGIN_SHA"; do
           if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
-            echo '::error::QA previews require full lowercase 40-character commit SHAs.'
+            echo '::error::QA builds require full lowercase 40-character commit SHAs.'
             exit 1
           fi
         done
@@ -79,8 +88,17 @@ runs:
           https://api.github.com/installation/token
 
     - name: Assemble the verified private profile
+      if: ${{ inputs.assembly == 'profile' }}
       shell: bash
       working-directory: ${{ github.workspace }}
       run: |
         node qa-source/scripts/prepare-studio-preview.mjs studio --check
         node qa-source/scripts/prepare-studio-preview.mjs studio --apply
+
+    - name: Assemble QA into the current Studio image source
+      if: ${{ inputs.assembly == 'image' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: node "$ACTION_PATH/../prepare-studio-image.mjs" prepare studio qa-source "$RUNNER_TEMP/studio-qa-base-lock.yaml"
