@@ -68,3 +68,40 @@ Lint the workflows with:
 ```bash
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/studio-image.yml
 ```
+
+
+### Opt-in private QA preview
+
+The existing `studio-ci.yml` has one optional string input, `qa_plugin_sha`, empty by default. Forwarded Studio jobs keep the existing Preview/Dist names, dispatch fields and ordinary behavior. Only an explicit manual Preview dispatch with a full private plugin commit selects the QA path; `head_sha` must be the exact Studio revision recorded by that commit's `release/studio-preview.json`. There is no moving plugin branch, matching framework branch, production image build or default QA registration.
+
+That path uses `studio-qa-checkout`: validate both full lowercase SHAs, mint a contents-read installation token restricted to `nocobase/studio` and `nocobase/studio-plugin-testing`, check out both without persisted credentials, revoke the token even on failure, then run the private profile's check/apply before the normal frozen dependency install and archive build. The existing GitHub App must be installed on both repositories; shared organization membership alone does not grant access. The profile fails closed if the Studio commit, source hash, base lock or resulting lock differs. It changes only the ephemeral build checkout.
+
+The built archive goes through the existing `nb-studio` CLI and CI key to a new App `studio-qa-preview-<run-id>` in `preview`; retries reuse that run's App. It neither changes an ordinary `studio-pr-<n>` App nor updates production. A protected environment still requires its native deployment approval. No private source, application archive or cache is uploaded as a public Actions artifact. Clean up the preview App through Studio after testing.
+
+Example (use the current full SHAs from the private plugin's profile and merged commit):
+
+```bash
+gh workflow run studio-ci.yml -R 2013xile/nocobase-ci --ref <reviewed-ci-branch> \
+  -f request_id=<new-uuid> -f event_name=pull_request \
+  -f head_sha=<profile-studio-sha> -f base_sha=<profile-studio-sha> \
+  -f target_branch=dev -f pr_number=0 -f skip_label=false \
+  -f qa_plugin_sha=<fixed-private-plugin-sha>
+```
+
+`pr_number=0` here is just the legacy required dispatch field: the opt-in path performs no PR label lookup or shared forwarded-checkout validation. Ordinary forwarded pull requests continue to require their actual PR number. An empty `qa_plugin_sha` never enters this path. Workflow dispatch runs the reviewed branch before merge; it does not require changing the default branch or merging a CI PR first. A successful preview is evidence for that fixed two-repository profile, not a production release or a completed historical-data migration.
+
+
+### Opt-in private QA image
+
+`studio-image.yml` also accepts `qa_plugin_sha` (empty by default). Ordinary bot dispatches and builds keep their source checkout, tags, version stamping and image behavior. A QA dispatch resolves the Studio `ref` once, requires the exact Studio revision in the selected private profile, and uses the same temporary-token, checksum and frozen-lock assembly as the validated preview on both architectures. CI helpers are checked out at the workflow revision; Studio, helpers and private plugin source are separate directories, and only the Studio directory is the Docker build context.
+
+QA runs use their own concurrency group and publish only `qa-<full-studio-sha>-p<full-plugin-sha>` to the existing internal `nocobase/studio` image repository. They never move `dev`, `main` or an ordinary `dev-<sha>` tag. The image carries the plugin and its database migrations, not local business data or credentials. This workflow builds and publishes an image; it does not update the running server. The deployment owner must select the QA image tag while retaining the existing configuration and storage, back up data before migrations and verify the updated service.
+
+After merging the CI change, explicitly dispatch the image workflow with the same two revisions already validated in the preview:
+
+```bash
+gh workflow run studio-image.yml -R 2013xile/nocobase-ci --ref main \
+  -f ref=<profile-studio-sha> -f qa_plugin_sha=<fixed-private-plugin-sha>
+```
+
+Merging this CI repository alone does not trigger a Studio source push or an image build. No additional credential is needed when the existing GitHub App already reads both private repositories and the existing image workflow can push to the internal registry.

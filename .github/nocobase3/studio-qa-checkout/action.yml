@@ -1,0 +1,86 @@
+name: Check out the fixed QA preview profile
+description: Read only Studio and its private QA plugin, revoke the token, then assemble the pinned preview profile.
+inputs:
+  studio-sha:
+    description: Immutable Studio commit matching the private release profile.
+    required: true
+  plugin-sha:
+    description: Immutable private QA plugin commit.
+    required: true
+  app-id:
+    description: GitHub App ID installed on both private source repositories.
+    required: true
+  private-key:
+    description: GitHub App private key.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate fixed revisions
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        STUDIO_SHA: ${{ inputs.studio-sha }}
+        PLUGIN_SHA: ${{ inputs.plugin-sha }}
+      run: |
+        for revision in "$STUDIO_SHA" "$PLUGIN_SHA"; do
+          if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::QA previews require full lowercase 40-character commit SHAs.'
+            exit 1
+          fi
+        done
+
+    - name: Create a read-only profile token
+      id: source-token
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: nocobase
+        repositories: |
+          studio
+          studio-plugin-testing
+        permission-contents: read
+        skip-token-revoke: true
+
+    - name: Check out fixed Studio
+      uses: actions/checkout@v4
+      with:
+        repository: nocobase/studio
+        ref: ${{ inputs.studio-sha }}
+        token: ${{ steps.source-token.outputs.token }}
+        persist-credentials: false
+        submodules: true
+        path: studio
+        show-progress: false
+
+    - name: Check out fixed private QA source
+      uses: actions/checkout@v4
+      with:
+        repository: nocobase/studio-plugin-testing
+        ref: ${{ inputs.plugin-sha }}
+        token: ${{ steps.source-token.outputs.token }}
+        persist-credentials: false
+        path: qa-source
+        show-progress: false
+
+    - name: Revoke the profile token
+      if: ${{ always() && steps.source-token.outputs.token != '' }}
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        APP_TOKEN: ${{ steps.source-token.outputs.token }}
+      run: |
+        curl --fail-with-body --silent --show-error --location \
+          --request DELETE \
+          --header 'Accept: application/vnd.github+json' \
+          --header "Authorization: Bearer $APP_TOKEN" \
+          --header 'X-GitHub-Api-Version: 2022-11-28' \
+          https://api.github.com/installation/token
+
+    - name: Assemble the verified private profile
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        node qa-source/scripts/prepare-studio-preview.mjs studio --check
+        node qa-source/scripts/prepare-studio-preview.mjs studio --apply
