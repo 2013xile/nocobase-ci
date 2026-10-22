@@ -98,6 +98,10 @@ function stampVersions(versions, { stamp = '20261019081500' } = {}) {
   }
 }
 
+test('packs the served CLI and runner under RUNNER_TEMP, on the workspace disk', () => {
+  assert.match(job('image'), /\n    env:\n      TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
+});
+
 test('takes the ref to build, and no release mode', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /      ref:\n(?:        .+\n)*?        required: true\n(?:        .+\n)*?        type: string\n/u);

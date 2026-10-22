@@ -95,6 +95,10 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
   assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
 });
 
+test('packs the per-platform Node.js under RUNNER_TEMP, on the workspace disk', () => {
+  assert.match(job('dist'), /\n    env:\n      TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
+});
+
 test('builds the per-platform tarballs of both products', () => {
   assert.match(job('dist'), /run: pnpm nocobase cli build --out output\/dist\n/u);
   assert.match(job('dist'), /run: pnpm nocobase cli build --runner --out output\/dist\n/u);

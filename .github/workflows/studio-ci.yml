@@ -231,6 +231,11 @@ jobs:
     if: ${{ inputs.event_name == 'push' && (inputs.target_branch == 'dev' || inputs.target_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Node.js for each packed platform is extracted under TMPDIR and renamed into node_modules/.cache, which fails with
+    # EXDEV when /tmp is its own filesystem, as it is on the ubuntu-26.04 image ubuntu-latest is moving to. RUNNER_TEMP
+    # sits on the workspace's disk.
+    env:
+      TMPDIR: ${{ runner.temp }}
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
