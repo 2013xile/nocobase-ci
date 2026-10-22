@@ -116,11 +116,6 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Node.js for each packed platform is extracted under TMPDIR and renamed into node_modules/.cache, which fails with
-    # EXDEV when /tmp is its own filesystem, as it is on the ubuntu-26.04 image ubuntu-latest is moving to. RUNNER_TEMP
-    # sits on the workspace's disk.
-    env:
-      TMPDIR: ${{ runner.temp }}
     strategy:
       matrix:
         include:
@@ -235,7 +230,11 @@ jobs:
       # workspace packages it depends on, and dist/ includes dist/runners, the nb-studio and nocobase-runner packages
       # Studio serves. `--target` swaps in the native binaries of the image's platform; the Dockerfile refuses a dist/
       # built for another one.
+      # TMPDIR on RUNNER_TEMP: Node.js for each packed platform is extracted under it and renamed into
+      # node_modules/.cache, which fails with EXDEV where /tmp is its own filesystem, as on ubuntu-26.04.
       - name: Build dist
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: pnpm build --target ${{ matrix.target }}
 
       - name: Sign in to the registry

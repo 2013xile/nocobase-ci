@@ -96,7 +96,12 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
 });
 
 test('packs the per-platform Node.js under RUNNER_TEMP, on the workspace disk', () => {
-  assert.match(job('dist'), /\n    env:\n      TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
+  for (const step of ['nb-studio', 'nocobase-runner']) {
+    assert.match(
+      job('dist'),
+      new RegExp(`- name: Build the ${step} tarballs\\n        working-directory: studio\\n        env:\\n          TMPDIR: \\$\\{\\{ runner\\.temp \\}\\}\\n`, 'u'),
+    );
+  }
 });
 
 test('builds the per-platform tarballs of both products', () => {

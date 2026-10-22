@@ -231,11 +231,6 @@ jobs:
     if: ${{ inputs.event_name == 'push' && (inputs.target_branch == 'dev' || inputs.target_branch == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Node.js for each packed platform is extracted under TMPDIR and renamed into node_modules/.cache, which fails with
-    # EXDEV when /tmp is its own filesystem, as it is on the ubuntu-26.04 image ubuntu-latest is moving to. RUNNER_TEMP
-    # sits on the workspace's disk.
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -276,12 +271,18 @@ jobs:
 
       # Each builds the workspace packages the product needs, downloads Node.js for each platform (checked against its
       # SHASUMS256.txt), and packs darwin-arm64, darwin-x64, linux-x64 and linux-arm64 into output/dist/stable/<product>.
+      # TMPDIR on RUNNER_TEMP: Node.js for each packed platform is extracted under it and renamed into
+      # node_modules/.cache, which fails with EXDEV where /tmp is its own filesystem, as on ubuntu-26.04.
       - name: Build the nb-studio tarballs
         working-directory: studio
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: pnpm nocobase cli build --out output/dist
 
       - name: Build the nocobase-runner tarballs
         working-directory: studio
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: pnpm nocobase cli build --runner --out output/dist
 
       # Kept briefly for a look (the runner is the public @nocobase/agent-runner, nb-studio Studio's private CLI). The
