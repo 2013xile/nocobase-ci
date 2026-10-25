@@ -2,8 +2,8 @@ name: Website v3 docs
 run-name: website-v3-docs:${{ inputs.request_id }}
 
 # The documentation site in the private nocobase/website-v3 (`doc/`): a pull request and a push to `main` build it, and
-# a push to `main` can publish it to the documentation CDN. Dispatched by nocobase-bot (docs/ci-forwarding.md there),
-# which mirrors the job named `Docs build` as a check run of the same name on nocobase/website-v3. The job names are
+# a push to `main` also publishes it to the documentation CDN. Dispatched by nocobase-bot (docs/ci-forwarding.md there),
+# which mirrors the jobs named `Docs build` and `Docs publish` as check runs of the same names on nocobase/website-v3. The job names are
 # that protocol. Every request builds, whatever it changes: a push must always leave the documentation built, so
 # nothing here selects by path, and `skip_label` (which `validate-inputs.mjs` requires) is ignored.
 #
@@ -11,13 +11,10 @@ run-name: website-v3-docs:${{ inputs.request_id }}
 # It touches no OSS or CDN secret: its only one is the GitHub App key that `.github/nocobase3/checkout` uses to read the
 # source, and the action revokes that token before any of the site's code runs.
 #
-# PUBLISHING IS OFF. `Docs publish` below is complete but skipped until the repository variable
-# `WEBSITE_V3_DOCS_PUBLISH` is `true`, and only a push to `main` publishes. The bot reports `Docs build` alone for now;
-# to publish, also add `Docs publish` to the push row of nocobase-bot's `website-v3` forwarding (see
-# docs/ci-forwarding.md there) and the checks section of .github/nocobase3/README.md here. Until then a skipped or
-# failing `Docs publish` appears on the run's Actions page and not on website-v3. It downloads the artifact, builds
-# nothing and checks out no site code. The OSS and CDN secrets appear only in the `env` of its `Publish` step, which
-# runs this repository's own `.github/nocobase3/docs-publish/deploy-cdn.mjs`.
+# A push to `main` also publishes: `Docs publish`, which the bot reports as a check of the same name on that push. It
+# downloads the artifact, builds nothing and checks out no site code. The OSS and CDN secrets appear only in the `env` of
+# its `Publish` step, which runs this repository's own `.github/nocobase3/docs-publish/deploy-cdn.mjs`. The domains it
+# publishes to are the repository variable `V3_DOCS_ALI_CDN_DOMAINS`.
 #
 # Publishing is atomic and reversible, as the v3 documentation's has always been: the build is uploaded to its own
 # timestamp directory in the bucket, then the CDN's back-to-origin rules of every domain in `V3_DOCS_ALI_CDN_DOMAINS`
@@ -136,7 +133,7 @@ jobs:
   publish:
     name: Docs publish
     needs: build
-    if: ${{ vars.WEBSITE_V3_DOCS_PUBLISH == 'true' && inputs.event_name == 'push' && inputs.target_branch == 'main' }}
+    if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:

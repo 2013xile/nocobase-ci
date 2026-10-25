@@ -100,11 +100,11 @@ test('runs only this repository\'s own publishing script', () => {
   assert.match(step(job('publish'), 'Install the publishing tools'), /npm ci --ignore-scripts --prefix \.github\/nocobase3\/docs-publish\n/u);
 });
 
-test('is switched off by one repository variable, and publishes only a push to main that is still the latest', () => {
+test('publishes every push to main that is still the latest, and never a pull request', () => {
   const publish = job('publish');
   assert.match(
     publish,
-    /\n    needs: build\n    if: \$\{\{ vars\.WEBSITE_V3_DOCS_PUBLISH == 'true' && inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u,
+    /\n    needs: build\n    if: \$\{\{ inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u,
   );
   assert.match(publish, /concurrency:\n      group: website-v3-docs-publish\n      cancel-in-progress: false\n/u);
   assert.match(publish, /repositories: website-v3\n          permission-contents: read\n/u);
