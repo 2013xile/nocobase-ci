@@ -1,0 +1,62 @@
+# First path segments of the NocoBase 2 documentation that docs.nocobase.com permanently redirects (301) to the same
+# path on https://nocode.docs.nocobase.com, one per line. Blank lines and lines starting with `#` are ignored.
+#
+# This list must stay identical to the regular expression of the EdgeScript rule `v2_paths_to_nocode_301` on the
+# docs.nocobase.com CDN. Change one and you must change the other in the same delivery.
+#
+# check-v2-redirect-prefixes.mjs fails `Docs build` when the v3 build output has a top-level entry with one of these
+# names, because the CDN would redirect every page under it to the v2 documentation before it reaches the bucket.
+ai
+ai-builder
+ai-dev
+ai-employees
+api
+auth-verification
+building-tips
+calculation-engine
+changelog
+cluster-mode
+data-sources
+data-visualization
+database
+development
+email-manager
+file-manager
+flow-engine
+get-started
+guide
+integration
+interface-builder
+log-and-monitor
+multi-app
+nocobase-cli
+notification-manager
+ops-management
+plugin-development
+plugins
+record-history
+routes
+runjs
+security
+shared-components
+solution
+system-management
+template-print
+tutorials
+ui-development-action
+ui-development-block
+ui-development-field
+users-permissions
+workflow
+handbook
+welcome
+v1
+cn
+de
+es
+fr
+id
+ja
+pt
+ru
+vi

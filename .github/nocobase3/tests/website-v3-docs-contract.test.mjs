@@ -71,6 +71,15 @@ test('builds with Node.js 24, a locked install without scripts, and doc/build.mj
   assert.doesNotMatch(workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n'), /DOCS_SITE_ORIGIN/u);
 });
 
+test('fails the build before the upload when a top-level entry is redirected to the v2 documentation', () => {
+  const source = job('build');
+  const guard = step(source, 'Check for paths redirected to the v2 docs');
+  assert.match(guard, /run: node \.github\/nocobase3\/docs-publish\/check-v2-redirect-prefixes\.mjs website\/doc\/dist\n/u);
+  assert.doesNotMatch(guard, /working-directory:/u);
+  const names = [...source.matchAll(/^      - name: (.+)$/gmu)].map((match) => match[1]);
+  assert.deepEqual(names.slice(-3), ['Check the build', 'Check for paths redirected to the v2 docs', 'Upload the site']);
+});
+
 test('uploads doc/dist as the artifact the publish job downloads', () => {
   const upload = step(job('build'), 'Upload the site');
   assert.match(upload, /uses: actions\/upload-artifact@v4\n/u);
