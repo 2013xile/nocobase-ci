@@ -40,7 +40,6 @@ test('names the job nocobase-bot mirrors, and a publish job that is not yet repo
   const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map((match) => match.slice(1));
   assert.deepEqual(jobs, [
     ['build', 'Docs build'],
-    ['latest', 'Check the push is the latest'],
     ['publish', 'Docs publish'],
   ]);
   // Every request builds, for a pull request and for a push, whatever it changes.
@@ -54,61 +53,67 @@ test('checks out only nocobase/website-v3 through the shared action, and never a
   ].map((match) => match.slice(1));
   assert.deepEqual(checkouts, [
     ['website-v3', 'website'],
-    ['website-v3', 'website'],
   ]);
-  assert.equal([...workflow.matchAll(/merge-pull-request: 'false'/gu)].length, 2);
+  assert.equal([...workflow.matchAll(/merge-pull-request: 'false'/gu)].length, 1);
   assert.match(workflow, /repositories: website-v3\n          permission-contents: read\n/u);
 });
 
 test('builds with Node.js 24, a locked install without scripts, and doc/build.mjs at the repository root', () => {
-  for (const id of ['build', 'publish']) {
-    const source = job(id);
-    assert.match(step(source, 'Set up Node.js'), /node-version: 24\n/u, id);
-    assert.doesNotMatch(source, /cache: |actions\/cache/u, id);
-    assert.match(step(source, 'Install dependencies'), /working-directory: website\n        run: npm ci --prefix doc --ignore-scripts\n/u, id);
-    assert.match(step(source, 'Build the site'), /working-directory: website\n        run: node doc\/build\.mjs\n/u, id);
-    const check = step(source, 'Check the build');
-    for (const file of ['doc/dist/index.html', 'doc/dist/zh-CN/index.html', 'doc/dist/404.html', 'doc/dist/sitemap.xml']) {
-      assert.ok(check.includes(file), `${id} checks ${file}`);
-    }
+  const source = job('build');
+  assert.match(step(source, 'Set up Node.js'), /node-version: 24\n/u);
+  assert.doesNotMatch(workflow, /actions\/cache|cache: /u);
+  assert.match(step(source, 'Install dependencies'), /working-directory: website\n        run: npm ci --prefix doc --ignore-scripts\n/u);
+  assert.match(step(source, 'Build the site'), /working-directory: website\n        run: node doc\/build\.mjs\n/u);
+  const check = step(source, 'Check the build');
+  for (const file of ['doc/dist/index.html', 'doc/dist/zh-CN/index.html', 'doc/dist/404.html', 'doc/dist/sitemap.xml']) {
+    assert.ok(check.includes(file), `checks ${file}`);
   }
   assert.doesNotMatch(workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n'), /DOCS_SITE_ORIGIN/u);
 });
 
-test('is public-safe: uploads and caches nothing', () => {
-  assert.doesNotMatch(workflow, /actions\/upload-artifact|actions\/cache/u);
+test('uploads doc/dist as the artifact the publish job downloads', () => {
+  const upload = step(job('build'), 'Upload the site');
+  assert.match(upload, /uses: actions\/upload-artifact@v4\n/u);
+  assert.match(upload, /name: website-v3-docs\n          path: website\/doc\/dist\n/u);
+  assert.match(upload, /retention-days: 7\n/u);
+  assert.match(step(job('publish'), 'Download the site'), /uses: actions\/download-artifact@v4\n        with:\n          name: website-v3-docs\n          path: dist\n/u);
 });
 
-test('gives no secret to the build job, and keys only to the Publish step', () => {
-  const code = job('build').split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
-  assert.doesNotMatch(code, /DOCS_ALI|V3_DOCS|OSS_ACCESS|secrets\.(?!NOCOBASE_APP_PRIVATE_KEY)/u);
+test('gives the build job no secret but the App key, and the publish job the OSS keys only in the Publish step', () => {
+  const code = (source) => source.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
+  const build = code(job('build'));
+  assert.doesNotMatch(build, /DOCS_ALI|V3_DOCS|OSS_ACCESS/u);
+  assert.doesNotMatch(build, /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY\b)/u);
+  assert.equal([...build.matchAll(/secrets\./gu)].length, 1);
   const publish = job('publish');
-  const withKeys = publish.split(/\n(?=      - name: )/u).filter((part) => /secrets\.DOCS_ALI/u.test(part));
+  const withKeys = publish.split(/\n(?=      - name: )/u).filter((part) => /secrets\.DOCS_ALI|secrets\.V3_DOCS/u.test(part));
   assert.equal(withKeys.length, 1);
   assert.match(withKeys[0], /^      - name: Publish\n/u);
-  // The steps that run the site's code come after the tools are installed and before the keys, and carry no `env`.
-  const order = ['Install the publishing tools', 'Install dependencies', 'Build the site', 'Check the build', 'Publish'];
-  const positions = order.map((name) => publish.indexOf(`      - name: ${name}\n`));
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.ok(positions.every((position) => position !== -1));
-  for (const name of ['Install dependencies', 'Build the site']) assert.doesNotMatch(step(publish, name), /\n        env:/u, name);
+  // The publish job runs none of the site's code: it checks out only this repository's helpers.
+  assert.doesNotMatch(publish, /doc\/build\.mjs|npm ci --prefix doc|nocobase3\/checkout/u);
 });
 
-test('runs only this repository\'s own publishing script, never one from the source repository', () => {
+test('runs only this repository\'s own publishing script', () => {
   const publish = step(job('publish'), 'Publish');
   assert.match(publish, /node \.github\/nocobase3\/docs-publish\/deploy-cdn\.mjs --timestamp "\$TIMESTAMP"/u);
-  assert.doesNotMatch(publish, /website\/(?:doc\/)?(?:scripts|[a-z-]+\.mjs)|node website\//u);
+  assert.doesNotMatch(publish, /website\//u);
   assert.match(step(job('publish'), 'Install the publishing tools'), /npm ci --ignore-scripts --prefix \.github\/nocobase3\/docs-publish\n/u);
 });
 
 test('is switched off by one repository variable, and publishes only a push to main that is still the latest', () => {
-  assert.match(
-    job('latest'),
-    /\n    if: \$\{\{ vars\.WEBSITE_V3_DOCS_PUBLISH == 'true' && inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u,
-  );
   const publish = job('publish');
-  assert.match(publish, /\n    needs: latest\n    if: \$\{\{ needs\.latest\.outputs\.current == 'true' \}\}\n/u);
+  assert.match(
+    publish,
+    /\n    needs: build\n    if: \$\{\{ vars\.WEBSITE_V3_DOCS_PUBLISH == 'true' && inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u,
+  );
   assert.match(publish, /concurrency:\n      group: website-v3-docs-publish\n      cancel-in-progress: false\n/u);
+  assert.match(publish, /repositories: website-v3\n          permission-contents: read\n/u);
+  // The latest-push check comes first, and every step after the token's revocation waits for it.
+  const names = [...publish.matchAll(/^      - name: (.+)$/gmu)].map((match) => match[1]);
+  assert.deepEqual(names.slice(0, 3), ['Create a read-only source token', 'Compare with the head of the branch', 'Revoke the source token']);
+  for (const name of names.slice(3)) {
+    assert.match(step(publish, name), /\n        if: \$\{\{ steps\.head\.outputs\.current == 'true' \}\}\n/u, name);
+  }
 });
 
 test('uploads the way the v3 documentation always has', () => {
@@ -116,8 +121,8 @@ test('uploads the way the v3 documentation always has', () => {
   assert.match(step(job('publish'), 'Install the publishing tools'), /ossutil\/v2\/2\.2\.2\/ossutil-2\.2\.2-linux-amd64\.zip/u);
   assert.match(publish, /TZ=Asia\/Shanghai date \+%Y%m%d%H%M%S/u);
   assert.match(publish, /REGION="\$\{DOCS_ALI_OSS_REGION#oss-\}"/u);
-  assert.match(publish, /ossutil cp -r website\/doc\/dist\/ "oss:\/\/\$DOCS_ALI_OSS_BUCKET\/\$TIMESTAMP\/"/u);
-  assert.match(publish, /ossutil cp website\/doc\/dist\/404\.html "oss:\/\/\$DOCS_ALI_OSS_BUCKET\/404\.html"/u);
+  assert.match(publish, /ossutil cp -r dist\/ "oss:\/\/\$DOCS_ALI_OSS_BUCKET\/\$TIMESTAMP\/"/u);
+  assert.match(publish, /ossutil cp dist\/404\.html "oss:\/\/\$DOCS_ALI_OSS_BUCKET\/404\.html"/u);
   assert.match(publish, /DOCS_ALI_OSS_BUCKET: \$\{\{ secrets\.V3_DOCS_ALI_OSS_BUCKET \}\}/u);
   assert.match(publish, /DOCS_ALI_OSS_REGION: \$\{\{ secrets\.V3_DOCS_ALI_OSS_REGION \}\}/u);
   assert.match(publish, /V3_DOCS_ALI_CDN_DOMAINS: \$\{\{ vars\.V3_DOCS_ALI_CDN_DOMAINS \}\}/u);
