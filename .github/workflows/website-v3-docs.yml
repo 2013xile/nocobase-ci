@@ -4,8 +4,9 @@ run-name: website-v3-docs:${{ inputs.request_id }}
 # The documentation site in the private nocobase/website-v3 (`doc/`): a pull request and a push to `main` build it, and
 # a push to `main` also publishes it to the documentation CDN. Dispatched by nocobase-bot (docs/ci-forwarding.md there),
 # which mirrors the jobs named `Docs build` and `Docs publish` as check runs of the same names on nocobase/website-v3. The job names are
-# that protocol. Every request builds, whatever it changes: a push must always leave the documentation built, so
-# nothing here selects by path, and `skip_label` (which `validate-inputs.mjs` requires) is ignored.
+# that protocol. The bot forwards only pull requests and pushes that change something under `doc/`, and never cancels a
+# request already running; every request it forwards builds here, and `skip_label` (which `validate-inputs.mjs`
+# requires) is ignored.
 #
 # `Docs build` checks out the commit and builds the site, then uploads `doc/dist` as the artifact `website-v3-docs`.
 # It touches no OSS or CDN secret: its only one is the GitHub App key that `.github/nocobase3/checkout` uses to read the
@@ -140,8 +141,11 @@ jobs:
       group: website-v3-docs-publish
       cancel-in-progress: false
     steps:
-      # Of two pushes that reach the CDN at once, only the newest may publish: a run whose commit is no longer the head
-      # of `main` skips every step below, so an older build can never switch the rules back over a newer one.
+      # An older build must never switch the rules back over a newer one. A run whose commit is no longer the head of
+      # `main` still publishes when nothing after it changes `doc/`: such commits are not forwarded, so no other run
+      # would publish this one's documentation. When a newer commit does change `doc/`, that push publishes instead
+      # and this run skips every step below; so does a run whose commit is no longer in `main`, or whose comparison
+      # GitHub cuts short at 300 files, which the bot forwards as a change to `doc/`.
       - name: Create a read-only source token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -160,12 +164,20 @@ jobs:
           BRANCH: ${{ inputs.target_branch }}
           HEAD_SHA: ${{ inputs.head_sha }}
         run: |
+          set -euo pipefail
           head=$(gh api "repos/nocobase/website-v3/commits/${BRANCH}" --jq .sha)
           if [ "$head" = "$HEAD_SHA" ]; then
             echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r status files docs < <(gh api "repos/nocobase/website-v3/compare/${HEAD_SHA}...${head}" --jq \
+            '[.status, (.files | length), ([.files[] | select((.filename | startswith("doc/")) or ((.previous_filename // "") | startswith("doc/")))] | length)] | @tsv')
+          if [ "$status" = "ahead" ] && [ "$files" -lt 300 ] && [ "$docs" -eq 0 ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${BRANCH} has moved on to ${head}, but nothing after this commit changes doc/, so this run publishes."
           else
             echo "current=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${BRANCH} has moved on, so a newer push publishes instead of this one."
+            echo "::notice::${BRANCH} has moved on to ${head} (${status}, ${docs} of ${files} changed files under doc/), so a newer push publishes instead of this one."
           fi
 
       - name: Revoke the source token

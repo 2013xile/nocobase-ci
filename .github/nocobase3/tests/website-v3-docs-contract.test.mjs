@@ -42,7 +42,7 @@ test('names the job nocobase-bot mirrors, and a publish job that is not yet repo
     ['build', 'Docs build'],
     ['publish', 'Docs publish'],
   ]);
-  // Every request builds, for a pull request and for a push, whatever it changes.
+  // Every request the bot forwards builds, for a pull request and for a push; selecting by path is the bot's.
   assert.doesNotMatch(job('build'), /\n    if:/u);
   assert.doesNotMatch(workflow, /paths:|git -C website diff|--name-only/u);
 });
@@ -100,7 +100,7 @@ test('runs only this repository\'s own publishing script', () => {
   assert.match(step(job('publish'), 'Install the publishing tools'), /npm ci --ignore-scripts --prefix \.github\/nocobase3\/docs-publish\n/u);
 });
 
-test('publishes every push to main that is still the latest, and never a pull request', () => {
+test('publishes a push to main unless a newer commit changes doc/, and never a pull request', () => {
   const publish = job('publish');
   assert.match(
     publish,
@@ -114,6 +114,11 @@ test('publishes every push to main that is still the latest, and never a pull re
   for (const name of names.slice(3)) {
     assert.match(step(publish, name), /\n        if: \$\{\{ steps\.head\.outputs\.current == 'true' \}\}\n/u, name);
   }
+  // Behind the head of main, it publishes only when every later commit leaves doc/ alone and the list is complete.
+  const head = step(publish, 'Compare with the head of the branch');
+  assert.match(head, /gh api "repos\/nocobase\/website-v3\/compare\/\$\{HEAD_SHA\}\.\.\.\$\{head\}"/u);
+  assert.match(head, /startswith\("doc\/"\)\) or \(\(\.previous_filename \/\/ ""\) \| startswith\("doc\/"\)\)/u);
+  assert.match(head, /if \[ "\$status" = "ahead" \] && \[ "\$files" -lt 300 \] && \[ "\$docs" -eq 0 \]; then\n            echo "current=true"/u);
 });
 
 test('uploads the way the v3 documentation always has', () => {
