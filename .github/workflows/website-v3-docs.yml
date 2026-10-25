@@ -121,6 +121,12 @@ jobs:
           done
           exit "$missing"
 
+      # The docs.nocobase.com CDN redirects the first path segments of the v2 documentation to nocode.docs.nocobase.com,
+      # so a top-level directory of this build with one of those names would never be reached. The list mirrors the
+      # EdgeScript rule `v2_paths_to_nocode_301`; this check runs this repository's script, not the site's code.
+      - name: Check for paths redirected to the v2 docs
+        run: node .github/nocobase3/docs-publish/check-v2-redirect-prefixes.mjs website/doc/dist
+
       - name: Upload the site
         uses: actions/upload-artifact@v4
         with:
