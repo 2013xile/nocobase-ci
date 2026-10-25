@@ -1,0 +1,129 @@
+name: Bot image
+run-name: bot-image:${{ inputs.ref }}
+
+# Builds nocobase-bot's image from the private nocobase/nocobase-bot repository, from any branch, tag or commit, and
+# pushes it to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is
+# `main`. A build of any other ref never moves `main`, so a hand-built old commit cannot replace what is deployed.
+#
+# `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default (manifest type
+# application/vnd.oci.empty.v1+json) and the registry rejects them with "unknown manifest class".
+#
+# The server pulls it with the compose file in ~/deploy/docker/nocobase-bot, whose image is
+# registry.cn-beijing.aliyuncs.com/nocobase/nocobase-bot:main. Nothing deploys it: after a build, run
+# `docker compose pull && docker compose up -d` on the server.
+#
+# nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/nocobase-bot's `main`; a newer push
+# cancels the build in progress. Run it by hand for any other ref:
+#
+#   gh workflow run bot-image.yml -R 2013xile/nocobase-ci -f ref=main
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of nocobase/nocobase-bot to build.
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-image-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build the linux/amd64 image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # A read-only token for nocobase/nocobase-bot alone, revoked as soon as the source is checked out.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase-bot
+          permission-contents: read
+          skip-token-revoke: true
+
+      # Resolves the ref once, so the checkout and the tag name the same commit even if the branch moves meanwhile.
+      - name: Resolve the ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          commit=$(gh api "repos/nocobase/nocobase-bot/commits/${REF}" --jq .sha)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "sha=${commit:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out nocobase-bot
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/nocobase-bot
+          ref: ${{ steps.resolve.outputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+          show-progress: false
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Sign in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Tags are built inline from the registry secret rather than passed through a step output, which would drop it.
+      # The second line is empty unless the ref is `main`, and an empty line in `tags` is ignored.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          tags: |
+            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase-bot:sha-${{ steps.resolve.outputs.sha }}
+            ${{ inputs.ref == 'main' && format('{0}/nocobase/nocobase-bot:main', secrets.ALI_DOCKER_REGISTRY) || '' }}
+
+      - name: Inspect the pushed image
+        env:
+          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: docker buildx imagetools inspect "${REGISTRY}/nocobase/nocobase-bot:sha-${SHA}"
+
+      - name: Summary
+        env:
+          REF: ${{ inputs.ref }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          {
+            echo '### Bot image'
+            echo
+            echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64."
+            echo
+            echo "- \`nocobase/nocobase-bot:sha-${SHA}\`"
+            if [ "$REF" = main ]; then echo '- `nocobase/nocobase-bot:main`'; fi
+          } >> "$GITHUB_STEP_SUMMARY"

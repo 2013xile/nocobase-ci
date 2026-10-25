@@ -1,0 +1,11 @@
+{
+  "name": "nocobase-docs-publish",
+  "private": true,
+  "type": "module",
+  "description": "Switches the CDN to a freshly uploaded documentation version. Run by website-v3-docs.yml with the publishing keys, so it lives here and not in the source repository.",
+  "dependencies": {
+    "@alicloud/cdn20180510": "4.2.2",
+    "@alicloud/openapi-client": "0.4.15",
+    "ali-oss": "6.23.0"
+  }
+}
