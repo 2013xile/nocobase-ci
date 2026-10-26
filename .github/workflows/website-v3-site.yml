@@ -1,0 +1,291 @@
+name: Website v3 site
+run-name: website-v3-site:${{ inputs.request_id }}
+
+# The marketing site in the private nocobase/website-v3 (`html/`): a pull request and a push to `main` build it, and a
+# push to `main` also publishes it to the bucket `WEBSITE_V3_ALI_OSS_BUCKET`. Dispatched by nocobase-bot
+# (docs/ci-forwarding.md there), which mirrors the jobs named `Site build` and `Site publish` as check runs of the same
+# names on nocobase/website-v3. The job names are that protocol. The bot forwards only pull requests and pushes that
+# change something under `html/`, and never cancels a request already running; every request it forwards builds here,
+# and `skip_label` (which `validate-inputs.mjs` requires) is ignored.
+#
+# `Site build` checks out the commit and assembles the site, then uploads it as the artifact `website-v3-site`. It
+# touches no OSS or CDN secret: its only one is the GitHub App key that `.github/nocobase3/checkout` uses to read the
+# source, and the action revokes that token before anything reads the checked-out files.
+#
+# This is a transitional build. The site is static HTML committed to `html/` (sources and the CMS mirror live in
+# `html/_src/`, which is not published), so the build runs none of the site's code: it copies `html/` without `_src/`
+# and serves `homepage.html` as `index.html` as well. website-v3 will later provide a build script that generates the
+# static pages per language, and `Assemble the site` will then run it instead, the way `website-v3-docs.yml` runs
+# `doc/build.mjs`.
+#
+# A push to `main` also publishes: `Site publish`, which the bot reports as a check of the same name on that push. It
+# downloads the artifact, builds nothing and checks out no site code. The OSS and CDN secrets appear only in the `env`
+# of its `Publish` step. The build is uploaded to its own timestamp directory in the bucket. When the repository
+# variable `WEBSITE_V3_ALI_CDN_DOMAINS` names domains, this repository's own
+# `.github/nocobase3/docs-publish/deploy-cdn.mjs` then points the CDN's back-to-origin rules of each of them at that
+# directory and removes the old versions, as the documentation's publish does; while it is empty, the run only uploads,
+# switches nothing and removes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: UUID shared with the source-repository check runs.
+        required: true
+        type: string
+      event_name:
+        description: Source event type (pull_request or push).
+        required: true
+        type: string
+      head_sha:
+        description: Immutable 40-character source head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable 40-character base SHA, or forty zeroes for the first push.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch.
+        required: true
+        type: string
+      pr_number:
+        description: Positive pull request number, or 0 for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source pull request has the skip label (true or false); not used.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-v3-site-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Site build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      # The commit itself, not a merge of a pull request into its base. The token is revoked inside this action, before
+      # any of the site's code runs.
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: website-v3
+          path: website
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+
+      # Transitional: copies the committed HTML and runs none of the site's code. Once website-v3 provides its build
+      # script that generates the static pages per language, this step runs that script instead.
+      - name: Assemble the site
+        working-directory: website
+        run: |
+          set -euo pipefail
+          # `_src/` holds the sources and the CMS mirror (about 49 MB) and is not published.
+          rsync -a --exclude '/_src/' --exclude '.DS_Store' html/ dist/
+          # `homepage.html` stays as well: existing links still point at it.
+          cp dist/homepage.html dist/index.html
+
+      # Only that the files the bucket's index document and the pages depend on exist; what is in them is website-v3's
+      # own business.
+      - name: Check the build
+        working-directory: website
+        run: |
+          missing=0
+          if [ ! -s dist/index.html ]; then
+            echo "::error::The build did not produce dist/index.html."
+            missing=1
+          fi
+          if [ ! -d dist/assets ]; then
+            echo "::error::The build did not produce dist/assets/."
+            missing=1
+          fi
+          if [ -e dist/_src ]; then
+            echo "::error::dist/_src must not be published."
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Upload the site
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-v3-site
+          path: website/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # Two publishes never overlap, since each rewrites the same CDN rules, and a publish is never cancelled midway: a
+  # rule pointing at a directory another run's cleanup deleted would take the site down.
+  publish:
+    name: Site publish
+    needs: build
+    if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: website-v3-site-publish
+      cancel-in-progress: false
+    steps:
+      # An older build must never switch the rules back over a newer one. A run whose commit is no longer the head of
+      # `main` still publishes when nothing after it changes `html/`: such commits are not forwarded, so no other run
+      # would publish this one's site. When a newer commit does change `html/`, that push publishes instead and this run
+      # skips every step below; so does a run whose commit is no longer in `main`, or whose comparison GitHub cuts short
+      # at 300 files, which the bot forwards as a change to `html/`.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: website-v3
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Compare with the head of the branch
+        id: head
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ inputs.target_branch }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/nocobase/website-v3/commits/${BRANCH}" --jq .sha)
+          if [ "$head" = "$HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r status files site < <(gh api "repos/nocobase/website-v3/compare/${HEAD_SHA}...${head}" --jq \
+            '[.status, (.files | length), ([.files[] | select((.filename | startswith("html/")) or ((.previous_filename // "") | startswith("html/")))] | length)] | @tsv')
+          if [ "$status" = "ahead" ] && [ "$files" -lt 300 ] && [ "$site" -eq 0 ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${BRANCH} has moved on to ${head}, but nothing after this commit changes html/, so this run publishes."
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${BRANCH} has moved on to ${head} (${status}, ${site} of ${files} changed files under html/), so a newer push publishes instead of this one."
+          fi
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Check out trusted CI helpers
+        if: ${{ steps.head.outputs.current == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Download the site
+        if: ${{ steps.head.outputs.current == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: website-v3-site
+          path: dist
+
+      - name: Set up Node.js
+        if: ${{ steps.head.outputs.current == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install the publishing tools
+        if: ${{ steps.head.outputs.current == 'true' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ossutil.zip" \
+            https://gosspublic.alicdn.com/ossutil/v2/2.2.2/ossutil-2.2.2-linux-amd64.zip
+          unzip -o -q "$RUNNER_TEMP/ossutil.zip" -d "$RUNNER_TEMP/ossutil"
+          sudo mv "$RUNNER_TEMP/ossutil/ossutil-2.2.2-linux-amd64/ossutil" /usr/local/bin/ossutil
+          sudo chmod 755 /usr/local/bin/ossutil
+          npm ci --ignore-scripts --prefix .github/nocobase3/docs-publish
+
+      - name: Publish
+        if: ${{ steps.head.outputs.current == 'true' }}
+        env:
+          DOCS_ALI_OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
+          DOCS_ALI_OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
+          DOCS_ALI_OSS_BUCKET: ${{ vars.WEBSITE_V3_ALI_OSS_BUCKET }}
+          DOCS_ALI_OSS_REGION: ${{ secrets.V3_DOCS_ALI_OSS_REGION }}
+          WEBSITE_V3_ALI_CDN_DOMAINS: ${{ vars.WEBSITE_V3_ALI_CDN_DOMAINS }}
+          # ossutil reads the credentials from these names rather than the DOCS_-prefixed ones.
+          OSS_ACCESS_KEY_ID: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.DOCS_ALI_OSS_ACCESS_KEY_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # The CDN domains are optional: without them the run uploads and stops there.
+          for name in DOCS_ALI_OSS_ACCESS_KEY_ID DOCS_ALI_OSS_ACCESS_KEY_SECRET \
+                      DOCS_ALI_OSS_BUCKET DOCS_ALI_OSS_REGION; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set. Configure it before publishing."
+              exit 1
+            fi
+          done
+
+          # ossutil takes the bare region id, `cn-beijing`, and derives the endpoint from it; the SDK the publish
+          # script uses takes the `oss-` prefixed form. The secret holds whichever one was pasted from the console,
+          # and each side normalizes it — `--region oss-cn-beijing` is rejected outright.
+          REGION="${DOCS_ALI_OSS_REGION#oss-}"
+
+          # Asia/Shanghai so the directory name reads as the local time of the people who deploy it.
+          TIMESTAMP="$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)"
+          echo "Uploading to oss://$DOCS_ALI_OSS_BUCKET/$TIMESTAMP/"
+
+          ossutil cp -r dist/ "oss://$DOCS_ALI_OSS_BUCKET/$TIMESTAMP/" \
+            -f -j 64 --region "$REGION"
+
+          # The bucket's static-website error document is read from the root, not from inside a version directory. The
+          # site has no 404 page yet, so it is uploaded only once the build has one.
+          if [ -f dist/404.html ]; then
+            ossutil cp dist/404.html "oss://$DOCS_ALI_OSS_BUCKET/404.html" \
+              -f --region "$REGION"
+          fi
+
+          if [ -z "${WEBSITE_V3_ALI_CDN_DOMAINS//[[:space:],]/}" ]; then
+            echo "::notice::WEBSITE_V3_ALI_CDN_DOMAINS is not set, so version $TIMESTAMP was only uploaded: no CDN was switched to it and no old version was removed."
+            {
+              echo "### Site uploaded"
+              echo
+              echo "Version \`$TIMESTAMP\` is in \`oss://$DOCS_ALI_OSS_BUCKET/$TIMESTAMP/\`. No CDN domain is configured (\`WEBSITE_V3_ALI_CDN_DOMAINS\`), so nothing was switched to it and no old version was removed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # deploy-cdn.mjs reads its domains from V3_DOCS_ALI_CDN_DOMAINS; this run hands it the site's own.
+          V3_DOCS_ALI_CDN_DOMAINS="$WEBSITE_V3_ALI_CDN_DOMAINS" \
+            node .github/nocobase3/docs-publish/deploy-cdn.mjs --timestamp "$TIMESTAMP"
+
+          {
+            echo "### Site published"
+            echo
+            echo "Version \`$TIMESTAMP\` is live on: ${WEBSITE_V3_ALI_CDN_DOMAINS}"
+          } >> "$GITHUB_STEP_SUMMARY"
