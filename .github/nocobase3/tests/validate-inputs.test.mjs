@@ -68,10 +68,10 @@ test('accepts only the forwarded source repositories and a plain checkout path',
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase3', targetBranch: 'develop', checkoutPath: 'nocobase3' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase', targetBranch: 'v3-develop', checkoutPath: 'nocobase3' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'CustomerPortal', targetBranch: 'main', checkoutPath: 'customerportal' }));
-  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'website-v3', targetBranch: 'main', checkoutPath: 'website' }));
-  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, website-v3.');
-  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, website-v3.');
-  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, website-v3.');
+  rejects({ repository: 'website-v3' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal.');
+  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal.');
+  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal.');
+  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal.');
   rejects({ checkoutPath: '../outside' }, 'path must be a single lowercase directory name.');
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
 });
