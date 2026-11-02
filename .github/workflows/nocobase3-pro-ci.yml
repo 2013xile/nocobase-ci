@@ -374,7 +374,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   pro-db-integration:
-    name: Pro DB integration (${{ matrix.database }})
+    name: Pro DB integration (${{ matrix.name }})
     needs: pro-db-plan
     if: ${{ needs.pro-db-plan.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
@@ -382,10 +382,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        database:
-          - kingbase
-          - dameng
-          - oceanbase
+        include:
+          - database: kingbase
+            name: kingbase
+          - database: dameng
+            name: dameng
+          - database: oceanbase
+            name: oceanbase
+            oceanbase_image: oceanbase/oceanbase-ce:4.4.2.1-101000022026050611
+          - database: oceanbase
+            name: oceanbase 4.3.5.6
+            oceanbase_image: oceanbase/oceanbase-ce:4.3.5.6-106000012026040916
+          - database: oceanbase
+            name: oceanbase 4.2.5.5
+            oceanbase_image: oceanbase/oceanbase-ce:4.2.5.5-105000032025071717
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -427,6 +437,8 @@ jobs:
 
       - name: Run the ${{ matrix.database }} integration suite
         working-directory: pro
+        env:
+          OCEANBASE_IMAGE: ${{ matrix.oceanbase_image }}
         run: pnpm --filter @nocobase/db-${{ matrix.database }} test:integration
 
   pro-db-integration-summary:
