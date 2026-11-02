@@ -30,7 +30,7 @@ const expectedJobs = [
   'Build',
   'Pro plugins on OSS Default installation smoke test',
   'Select Pro DB integration',
-  'Pro DB integration (${{ matrix.database }})',
+  'Pro DB integration (${{ matrix.name }})',
   'Pro DB integration',
   'quality',
   'Validate and advise',
@@ -76,9 +76,19 @@ test('keeps the check job names and branch conditions', () => {
 test('runs each Pro database integration suite in its own job and gates quality on their summary', () => {
   assert.match(
     workflow,
-    /name: Pro DB integration \(\$\{\{ matrix\.database \}\}\)\n    needs: pro-db-plan\n    if: \$\{\{ needs\.pro-db-plan\.outputs\.should_run == 'true' \}\}/u,
+    /name: Pro DB integration \(\$\{\{ matrix\.name \}\}\)\n    needs: pro-db-plan\n    if: \$\{\{ needs\.pro-db-plan\.outputs\.should_run == 'true' \}\}/u,
   );
-  assert.match(workflow, /        database:\n          - kingbase\n          - dameng\n          - oceanbase\n/u);
+  const matrix = workflow.slice(workflow.indexOf('  pro-db-integration:\n'), workflow.indexOf('  pro-db-integration-summary:\n'));
+  const rows = [...matrix.matchAll(/          - database: (\S+)\n            name: (.+)(?:\n            oceanbase_image: (\S+))?/gu)]
+    .map(([, database, name, image]) => ({ database, name, image }));
+  assert.deepEqual(rows, [
+    { database: 'kingbase', name: 'kingbase', image: undefined },
+    { database: 'dameng', name: 'dameng', image: undefined },
+    { database: 'oceanbase', name: 'oceanbase', image: 'oceanbase/oceanbase-ce:4.4.2.1-101000022026050611' },
+    { database: 'oceanbase', name: 'oceanbase 4.3.5.6', image: 'oceanbase/oceanbase-ce:4.3.5.6-106000012026040916' },
+    { database: 'oceanbase', name: 'oceanbase 4.2.5.5', image: 'oceanbase/oceanbase-ce:4.2.5.5-105000032025071717' },
+  ]);
+  assert.match(matrix, /OCEANBASE_IMAGE: \$\{\{ matrix\.oceanbase_image \}\}/u);
   assert.match(workflow, /run: pnpm --filter @nocobase\/db-\$\{\{ matrix\.database \}\} test:integration/u);
   assert.match(workflow, /name: Pro DB integration\n    if: \$\{\{ always\(\) \}\}\n    needs:\n      - pro-db-plan\n      - pro-db-integration\n/u);
   const quality = workflow.slice(workflow.indexOf('  quality:\n'), workflow.indexOf('  changeset-check:\n'));
