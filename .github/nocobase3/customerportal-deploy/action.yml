@@ -1,0 +1,152 @@
+name: Build and deploy CustomerPortal
+description: Builds the checked-out nocobase/CustomerPortal into a linux/amd64 image, pushes it to the internal registry as nocobase/customer-portal:internal-<short sha>, and deploys that tag to the internal test environment over SSH.
+
+# Shared by customerportal-ci.yml (the forwarded `Deploy` check of every push to main) and customerportal-deploy.yml (a manual redeploy), so that both build and deploy in exactly the same way. The caller has checked the source out into `path` and holds the secrets; nothing here uploads the source or the build, and nothing is cached.
+#
+# The build runs `pnpm build --target linux-x64` on the runner, with a larger heap than vite's default (which runs out of memory), and then `docker build --build-arg DIST=prebuilt` packages that `dist/`, as CustomerPortal's `.agents/rules/build-and-deploy.md` describes. `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class").
+#
+# The deploy reaches the server over SSH with a key that the server's authorized_keys restricts to one command, /root/deploy/apps/customer-internal/deploy.sh. The only thing sent is the tag, which the script reads from SSH_ORIGINAL_COMMAND, validates against `^internal-[0-9a-f]{7,40}$`, pulls from the registry fixed in the server's own configuration, backs up the database, checks the files, restarts and health-checks, going back to the previous tag when that fails. Its output is the job's log, and exit code 75 means another deployment is running.
+
+inputs:
+  path:
+    description: The directory the source was checked out into.
+    default: customerportal
+  sha:
+    description: The 40-character commit that was checked out; its first seven characters name the image tag.
+    required: true
+  registry:
+    description: The internal registry host.
+    required: true
+  registry-username:
+    description: The registry user.
+    required: true
+  registry-password:
+    description: The registry password.
+    required: true
+  ssh-key:
+    description: The private key the server restricts to its deploy script.
+    required: true
+  deploy-host:
+    description: The server to deploy to.
+    required: true
+  known-hosts:
+    description: The server's host key, one known_hosts line.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Name the image tag
+      id: tag
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+      run: |
+        if ! printf %s "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+          echo "Refusing a malformed commit: $SHA" >&2
+          exit 1
+        fi
+        echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+    # The pnpm version is the repository's own `packageManager`.
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        package_json_file: ${{ inputs.path }}/package.json
+        run_install: false
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: pnpm install --frozen-lockfile
+
+    # Leaves <path>/dist, which the Dockerfile packages with DIST=prebuilt.
+    - name: Build the application
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        NODE_OPTIONS: --max-old-space-size=6144
+      run: pnpm build --target linux-x64
+
+    - name: Sign in to the registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.registry-username }}
+        password: ${{ inputs.registry-password }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push the image
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.path }}
+        file: ${{ inputs.path }}/Dockerfile
+        build-args: DIST=prebuilt
+        platforms: linux/amd64
+        provenance: false
+        sbom: false
+        push: true
+        tags: ${{ inputs.registry }}/nocobase/customer-portal:internal-${{ steps.tag.outputs.short }}
+
+    - name: Inspect the pushed image
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        SHORT: ${{ steps.tag.outputs.short }}
+      run: docker buildx imagetools inspect "${REGISTRY}/nocobase/customer-portal:internal-${SHORT}"
+
+    - name: Deploy over SSH
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh-key }}
+        DEPLOY_HOST: ${{ inputs.deploy-host }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        TAG: internal-${{ steps.tag.outputs.short }}
+      run: |
+        set -eu
+        summary() {
+          {
+            echo '### CustomerPortal deployment'
+            echo
+            echo "Tag \`${TAG}\`: $1"
+          } >> "$GITHUB_STEP_SUMMARY"
+        }
+        if ! printf %s "$TAG" | grep -Eq '^internal-[0-9a-f]{7,40}$'; then
+          summary 'refused, the tag is malformed.'
+          echo "Refusing to deploy a malformed tag: $TAG" >&2
+          exit 1
+        fi
+        if [ -z "$DEPLOY_HOST" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$SSH_KEY" ]; then
+          summary 'not started, the deploy host, its host key or the SSH key is not configured.'
+          echo 'CUSTOMERPORTAL_DEPLOY_HOST, CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS or CUSTOMERPORTAL_DEPLOY_SSH_KEY is missing from the repository secrets and variables.' >&2
+          exit 1
+        fi
+        dir=$(mktemp -d "$RUNNER_TEMP/deploy.XXXXXX")
+        trap 'rm -rf "$dir"' EXIT
+        umask 077
+        printf '%s\n' "$SSH_KEY" > "$dir/key"
+        printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
+        chmod 600 "$dir/key" "$dir/known_hosts"
+        status=0
+        ssh -i "$dir/key" -p 22 \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="$dir/known_hosts" \
+          -o ServerAliveInterval=30 \
+          "root@${DEPLOY_HOST}" "$TAG" || status=$?
+        if [ "$status" -eq 0 ]; then
+          summary 'deployed.'
+        elif [ "$status" -eq 75 ]; then
+          summary 'not deployed, another deployment is running on the server.'
+        else
+          summary "failed with exit code ${status}; the server goes back to the previous tag when it can."
+        fi
+        exit "$status"

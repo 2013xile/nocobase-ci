@@ -1,15 +1,11 @@
 name: CustomerPortal deploy
 run-name: customerportal-deploy:${{ inputs.ref }}
 
-# Builds the private nocobase/CustomerPortal repository at `ref` into a linux/amd64 image, pushes it to the internal registry as `nocobase/customer-portal:internal-<short sha>`, and deploys that tag to the internal test environment.
-#
-# The build runs `pnpm build --target linux-x64` on the runner, with a larger heap than vite's default (which runs out of memory), and then `docker build --build-arg DIST=prebuilt` packages that `dist/`, as CustomerPortal's `.agents/rules/build-and-deploy.md` describes. `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class").
-#
-# The deploy reaches the server over SSH with a key that the server's authorized_keys restricts to one command, /root/deploy/apps/customer-internal/deploy.sh. The only thing sent is the tag, which the script reads from SSH_ORIGINAL_COMMAND, validates against `^internal-[0-9a-f]{7,40}$`, pulls from the registry fixed in the server's own configuration, backs up the database, checks the files, restarts and health-checks, going back to the previous tag when that fails. Its output is this job's log, and exit code 75 means another deployment is running.
-#
-# nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/CustomerPortal's `main`. A newer push for the same ref cancels the build still in progress, but never a deployment in progress: deployments queue, and a queued one is replaced by a newer one. Run it by hand with:
+# A manual redeploy of the private nocobase/CustomerPortal to the internal test environment, for a branch at its current head: run it by hand with
 #
 #   gh workflow run customerportal-deploy.yml -R 2013xile/nocobase-ci -f ref=main
+#
+# Nothing dispatches it. The deployment of every push to `main` is the `Deploy` job of customerportal-ci.yml, which nocobase-bot forwards as a check on the pushed commit; this workflow builds and deploys in exactly the same way (the composite action customerportal-deploy) and shares its concurrency group, so a manual redeploy and a forwarded one never run at the same time. It creates no check.
 #
 # This repository is public: nothing uploads CustomerPortal's source or build, and nothing is cached.
 
@@ -26,16 +22,21 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build the linux/amd64 image
+  deploy:
+    name: Build and deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    # A deployment in progress is never cancelled; the one waiting behind it is replaced by a newer one.
     concurrency:
-      group: customerportal-internal-build-${{ inputs.ref }}
-      cancel-in-progress: true
-    outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
+      group: customerportal-internal-deploy
+      cancel-in-progress: false
     steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
       # A read-only token for nocobase/CustomerPortal alone, revoked as soon as the source is checked out.
       - name: Create a read-only source token
         id: app-token
@@ -57,7 +58,6 @@ jobs:
         run: |
           commit=$(gh api "repos/nocobase/CustomerPortal/commits/${REF}" --jq .sha)
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
-          echo "sha=${commit:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Check out CustomerPortal
         uses: actions/checkout@v4
@@ -81,122 +81,13 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
 
-      # The pnpm version is the repository's own `packageManager`.
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - name: Build and deploy
+        uses: ./.github/nocobase3/customerportal-deploy
         with:
-          package_json_file: customerportal/package.json
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Install dependencies
-        working-directory: customerportal
-        run: pnpm install --frozen-lockfile
-
-      # Leaves customerportal/dist, which the Dockerfile packages with DIST=prebuilt.
-      - name: Build the application
-        working-directory: customerportal
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-        run: pnpm build --target linux-x64
-
-      - name: Sign in to the registry
-        uses: docker/login-action@v3
-        with:
+          sha: ${{ steps.resolve.outputs.commit }}
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          username: ${{ secrets.ALI_DOCKER_USERNAME }}
-          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: customerportal
-          file: customerportal/Dockerfile
-          build-args: DIST=prebuilt
-          platforms: linux/amd64
-          provenance: false
-          sbom: false
-          push: true
-          tags: ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/customer-portal:internal-${{ steps.resolve.outputs.sha }}
-
-      - name: Inspect the pushed image
-        env:
-          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: docker buildx imagetools inspect "${REGISTRY}/nocobase/customer-portal:internal-${SHA}"
-
-      - name: Summary
-        env:
-          REF: ${{ inputs.ref }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: |
-          {
-            echo '### CustomerPortal image'
-            echo
-            echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64 as \`nocobase/customer-portal:internal-${SHA}\`."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  deploy:
-    name: Deploy to the internal environment
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # A deployment in progress is never cancelled; the queued one is replaced by a newer one.
-    concurrency:
-      group: customerportal-internal-deploy
-      cancel-in-progress: false
-    steps:
-      - name: Deploy over SSH
-        env:
-          SSH_KEY: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
-          KNOWN_HOSTS: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}
-          TAG: internal-${{ needs.build.outputs.sha }}
-        run: |
-          set -eu
-          summary() {
-            {
-              echo '### CustomerPortal deployment'
-              echo
-              echo "Tag \`${TAG}\`: $1"
-            } >> "$GITHUB_STEP_SUMMARY"
-          }
-          if ! printf %s "$TAG" | grep -Eq '^internal-[0-9a-f]{7,40}$'; then
-            summary 'refused, the tag is malformed.'
-            echo "Refusing to deploy a malformed tag: $TAG" >&2
-            exit 1
-          fi
-          if [ -z "$DEPLOY_HOST" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$SSH_KEY" ]; then
-            summary 'not started, the deploy host, its host key or the SSH key is not configured.'
-            echo 'CUSTOMERPORTAL_DEPLOY_HOST, CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS or CUSTOMERPORTAL_DEPLOY_SSH_KEY is missing from the repository secrets and variables.' >&2
-            exit 1
-          fi
-          dir=$(mktemp -d "$RUNNER_TEMP/deploy.XXXXXX")
-          trap 'rm -rf "$dir"' EXIT
-          umask 077
-          printf '%s\n' "$SSH_KEY" > "$dir/key"
-          printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
-          chmod 600 "$dir/key" "$dir/known_hosts"
-          status=0
-          ssh -i "$dir/key" -p 22 \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$dir/known_hosts" \
-            -o ServerAliveInterval=30 \
-            "root@${DEPLOY_HOST}" "$TAG" || status=$?
-          if [ "$status" -eq 0 ]; then
-            summary 'deployed.'
-          elif [ "$status" -eq 75 ]; then
-            summary 'not deployed, another deployment is running on the server.'
-          else
-            summary "failed with exit code ${status}; the server goes back to the previous tag when it can."
-          fi
-          exit "$status"
+          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+          ssh-key: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
+          deploy-host: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
+          known-hosts: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}

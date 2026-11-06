@@ -26,19 +26,35 @@ test('takes exactly the seven forwarded fields and is named after the request', 
   assert.deepEqual(inputNames(workflow), inputNames(proWorkflow));
 });
 
-test('has only the job nocobase-bot mirrors, for pull requests only', () => {
+test('has only the jobs nocobase-bot mirrors, each for its own event', () => {
   const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map((match) => match.slice(1));
-  assert.deepEqual(jobs, [['preview', 'Preview']]);
+  assert.deepEqual(jobs, [['preview', 'Preview'], ['deploy', 'Deploy']]);
   assert.match(job('preview'), /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u);
+  assert.match(job('deploy'), /\n    if: \$\{\{ inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u);
 });
 
-test('checks out only the pull request head of nocobase/CustomerPortal, never a merge', () => {
+test('checks out only CustomerPortal, the pull request head for the preview and the pushed head for the deployment, never a merge', () => {
   const checkouts = [
     ...workflow.matchAll(/uses: \.\/\.github\/nocobase3\/checkout\n        with:\n          repository: (.+)\n          path: (.+)\n/gu),
   ].map((match) => match.slice(1));
-  assert.deepEqual(checkouts, [['CustomerPortal', 'customerportal']]);
-  assert.equal([...workflow.matchAll(/merge-pull-request: 'false'/gu)].length, 1);
+  assert.deepEqual(checkouts, [['CustomerPortal', 'customerportal'], ['CustomerPortal', 'customerportal']]);
+  assert.equal([...workflow.matchAll(/merge-pull-request: 'false'/gu)].length, 2);
   assert.match(workflow, /repositories: CustomerPortal\n          permission-pull-requests: read\n/u);
+});
+
+test('deploys the commit the check is on, with one job whose conclusion is the check, and never cancels a deployment', () => {
+  const source = job('deploy');
+  assert.match(source, /head-sha: \$\{\{ inputs\.head_sha \}\}\n/u);
+  assert.match(source, /uses: \.\/\.github\/nocobase3\/customerportal-deploy\n        with:\n          sha: \$\{\{ inputs\.head_sha \}\}\n/u);
+  // Nothing resolves a branch name, which could name a commit newer than the check's.
+  assert.doesNotMatch(source, /gh api|commits\//u);
+  assert.match(source, /\n    concurrency:\n      group: customerportal-internal-deploy\n      cancel-in-progress: false\n/u);
+  assert.doesNotMatch(job('preview'), /customerportal-internal-deploy/u);
+  assert.match(source, /ssh-key: \$\{\{ secrets\.CUSTOMERPORTAL_DEPLOY_SSH_KEY \}\}/u);
+  assert.match(source, /deploy-host: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_HOST \}\}/u);
+  assert.match(source, /known-hosts: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS \}\}/u);
+  assert.doesNotMatch(source, /^\s+environment:/mu);
+  assert.doesNotMatch(source, /needs:/u);
 });
 
 test('skips on the no-preview label and for changes the application does not run', () => {
