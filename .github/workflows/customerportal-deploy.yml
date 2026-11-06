@@ -148,7 +148,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: customerportal-internal
     # A deployment in progress is never cancelled; the queued one is replaced by a newer one.
     concurrency:
       group: customerportal-internal-deploy
@@ -176,7 +175,7 @@ jobs:
           fi
           if [ -z "$DEPLOY_HOST" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$SSH_KEY" ]; then
             summary 'not started, the deploy host, its host key or the SSH key is not configured.'
-            echo 'CUSTOMERPORTAL_DEPLOY_HOST, CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS or CUSTOMERPORTAL_DEPLOY_SSH_KEY is missing from the environment.' >&2
+            echo 'CUSTOMERPORTAL_DEPLOY_HOST, CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS or CUSTOMERPORTAL_DEPLOY_SSH_KEY is missing from the repository secrets and variables.' >&2
             exit 1
           fi
           dir=$(mktemp -d "$RUNNER_TEMP/deploy.XXXXXX")

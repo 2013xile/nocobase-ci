@@ -37,8 +37,9 @@ test('builds dist with a larger heap, then packages it as a linux/amd64 image wi
   assert.match(workflow, /sha=\$\{commit:0:7\}/u);
 });
 
-test('deploys the tag alone over a restricted SSH key in the customerportal-internal environment', () => {
-  assert.match(workflow, /needs: build\n(?:    .+\n)*?    environment: customerportal-internal\n/u);
+test('deploys the tag alone over a restricted SSH key with repository-level secrets', () => {
+  assert.match(workflow, /needs: build\n/u);
+  assert.doesNotMatch(workflow, /^\s+environment:/mu);
   assert.match(workflow, /secrets\.CUSTOMERPORTAL_DEPLOY_SSH_KEY/u);
   assert.match(workflow, /vars\.CUSTOMERPORTAL_DEPLOY_HOST/u);
   assert.match(workflow, /vars\.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS/u);
