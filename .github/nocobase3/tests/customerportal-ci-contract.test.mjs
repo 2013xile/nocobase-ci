@@ -48,8 +48,8 @@ test('deploys the commit the check is on, with one job whose conclusion is the c
   assert.match(source, /uses: \.\/\.github\/nocobase3\/customerportal-deploy\n        with:\n          sha: \$\{\{ inputs\.head_sha \}\}\n/u);
   // Nothing resolves a branch name, which could name a commit newer than the check's.
   assert.doesNotMatch(source, /gh api|commits\//u);
-  assert.match(source, /\n    concurrency:\n      group: customerportal-internal-deploy\n      cancel-in-progress: false\n/u);
-  assert.doesNotMatch(job('preview'), /customerportal-internal-deploy/u);
+  assert.match(source, /\n    concurrency:\n      group: customerportal-deploy\n      cancel-in-progress: false\n/u);
+  assert.doesNotMatch(job('preview'), /group: customerportal-deploy/u);
   assert.match(source, /ssh-key: \$\{\{ secrets\.CUSTOMERPORTAL_DEPLOY_SSH_KEY \}\}/u);
   assert.match(source, /deploy-host: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_HOST \}\}/u);
   assert.match(source, /known-hosts: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS \}\}/u);
