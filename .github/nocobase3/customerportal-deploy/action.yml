@@ -1,11 +1,11 @@
 name: Build and deploy CustomerPortal
-description: Builds the checked-out nocobase/CustomerPortal into a linux/amd64 image, pushes it to the internal registry as nocobase/customer-portal:internal-<short sha>, and deploys that tag to the internal test environment over SSH.
+description: Builds the checked-out nocobase/CustomerPortal into a linux/amd64 image, pushes it to the internal registry as nocobase/customer-portal:prod-<short sha>, and deploys that tag to the production environment (https://customer.nocobase.com) over SSH.
 
 # Shared by customerportal-ci.yml (the forwarded `Deploy` check of every push to main) and customerportal-deploy.yml (a manual redeploy), so that both build and deploy in exactly the same way. The caller has checked the source out into `path` and holds the secrets; nothing here uploads the source or the build, and nothing is cached.
 #
 # The build runs `pnpm build --target linux-x64` on the runner, with a larger heap than vite's default (which runs out of memory), and then `docker build --build-arg DIST=prebuilt` packages that `dist/`, as CustomerPortal's `.agents/rules/build-and-deploy.md` describes. `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class").
 #
-# The deploy reaches the server over SSH with a key that the server's authorized_keys restricts to one command, /root/deploy/apps/customer-internal/deploy.sh. The only thing sent is the tag, which the script reads from SSH_ORIGINAL_COMMAND, validates against `^internal-[0-9a-f]{7,40}$`, pulls from the registry fixed in the server's own configuration, backs up the database, checks the files, restarts and health-checks, going back to the previous tag when that fails. Its output is the job's log, and exit code 75 means another deployment is running.
+# The deploy reaches the server over SSH with a key that the server's authorized_keys restricts to one command, /root/deploy/apps/customer/deploy.sh. The only thing sent is the tag, which the script reads from SSH_ORIGINAL_COMMAND, validates against `^prod-[0-9a-f]{7,40}$`, pulls from the registry fixed in the server's own configuration, backs up the database, checks the files, restarts and health-checks, going back to the previous tag when that fails. Its output is the job's log, and exit code 75 means another deployment is running.
 
 inputs:
   path:
@@ -93,14 +93,14 @@ runs:
         provenance: false
         sbom: false
         push: true
-        tags: ${{ inputs.registry }}/nocobase/customer-portal:internal-${{ steps.tag.outputs.short }}
+        tags: ${{ inputs.registry }}/nocobase/customer-portal:prod-${{ steps.tag.outputs.short }}
 
     - name: Inspect the pushed image
       shell: bash
       env:
         REGISTRY: ${{ inputs.registry }}
         SHORT: ${{ steps.tag.outputs.short }}
-      run: docker buildx imagetools inspect "${REGISTRY}/nocobase/customer-portal:internal-${SHORT}"
+      run: docker buildx imagetools inspect "${REGISTRY}/nocobase/customer-portal:prod-${SHORT}"
 
     - name: Deploy over SSH
       shell: bash
@@ -108,7 +108,7 @@ runs:
         SSH_KEY: ${{ inputs.ssh-key }}
         DEPLOY_HOST: ${{ inputs.deploy-host }}
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
-        TAG: internal-${{ steps.tag.outputs.short }}
+        TAG: prod-${{ steps.tag.outputs.short }}
       run: |
         set -eu
         summary() {
@@ -118,7 +118,7 @@ runs:
             echo "Tag \`${TAG}\`: $1"
           } >> "$GITHUB_STEP_SUMMARY"
         }
-        if ! printf %s "$TAG" | grep -Eq '^internal-[0-9a-f]{7,40}$'; then
+        if ! printf %s "$TAG" | grep -Eq '^prod-[0-9a-f]{7,40}$'; then
           summary 'refused, the tag is malformed.'
           echo "Refusing to deploy a malformed tag: $TAG" >&2
           exit 1

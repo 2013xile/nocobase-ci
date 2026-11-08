@@ -7,8 +7,8 @@ run-name: customerportal-ci:${{ inputs.request_id }}
 #
 # - pull requests: `Preview`. The bot forwards every pull request from a branch of the repository itself, whatever its
 #   target, never a fork's: the preview runs the pull request's code next to the Studio key.
-# - pushes to `main`: `Deploy`, which builds the pushed commit into an image and deploys it to the internal test
-#   environment. The bot forwards no other branch and no push whose head commit says `[skip ci]`.
+# - pushes to `main`: `Deploy`, which builds the pushed commit into an image and deploys it to the production environment (https://customer.nocobase.com).
+#   The bot forwards no other branch and no push whose head commit says `[skip ci]`.
 #
 # CustomerPortal is a NocoBase 3 application at the repository root. `Preview` deploys the pull request's head to its
 # own App `customerportal-pr-<n>` in Studio's `preview` environment, as the workflow Studio generated in the repository
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: customerportal-internal-deploy
+      group: customerportal-deploy
       cancel-in-progress: false
     steps:
       - name: Check out trusted CI helpers

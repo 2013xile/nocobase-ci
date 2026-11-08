@@ -19,7 +19,7 @@ test('the manual redeploy takes the ref to deploy, runs by dispatch only, and is
 });
 
 test('the manual redeploy and the forwarded Deploy share one group that never cancels a deployment', () => {
-  const group = /concurrency:\n      group: customerportal-internal-deploy\n      cancel-in-progress: false\n/u;
+  const group = /concurrency:\n      group: customerportal-deploy\n      cancel-in-progress: false\n/u;
   assert.match(workflow, group);
   assert.match(forwarded, group);
   assert.doesNotMatch(workflow, /cancel-in-progress: true/u);
@@ -39,17 +39,17 @@ test('builds dist with a larger heap, then packages it as a linux/amd64 image wi
   assert.match(action, /node-version: 24\n/u);
   assert.ok(action.indexOf('pnpm build --target linux-x64') < action.indexOf('- name: Build and push the image'));
   assert.match(action, /build-args: DIST=prebuilt\n        platforms: linux\/amd64\n        provenance: false\n        sbom: false\n/u);
-  assert.match(action, /tags: \$\{\{ inputs\.registry \}\}\/nocobase\/customer-portal:internal-\$\{\{ steps\.tag\.outputs\.short \}\}\n/u);
+  assert.match(action, /tags: \$\{\{ inputs\.registry \}\}\/nocobase\/customer-portal:prod-\$\{\{ steps\.tag\.outputs\.short \}\}\n/u);
   assert.match(action, /short=\$\{SHA:0:7\}/u);
   assert.match(action, /\^\[0-9a-f\]\{40\}\$/u);
 });
 
 test('deploys the tag alone over a restricted SSH key with repository-level secrets', () => {
   assert.doesNotMatch(action, /^\s+environment:/mu);
-  assert.match(action, /TAG: internal-\$\{\{ steps\.tag\.outputs\.short \}\}\n/u);
+  assert.match(action, /TAG: prod-\$\{\{ steps\.tag\.outputs\.short \}\}\n/u);
   assert.match(action, /-o StrictHostKeyChecking=yes/u);
   assert.match(action, /"root@\$\{DEPLOY_HOST\}" "\$TAG"/u);
-  assert.match(action, /\^internal-\[0-9a-f\]\{7,40\}\$/u);
+  assert.match(action, /\^prod-\[0-9a-f\]\{7,40\}\$/u);
   assert.match(action, /trap 'rm -rf "\$dir"' EXIT/u);
   assert.doesNotMatch(action, /echo[^\n]*\$\{?SSH_KEY/u);
   assert.match(action, /"\$status" -eq 75/u);

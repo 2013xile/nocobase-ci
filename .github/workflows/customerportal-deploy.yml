@@ -1,7 +1,7 @@
 name: CustomerPortal deploy
 run-name: customerportal-deploy:${{ inputs.ref }}
 
-# A manual redeploy of the private nocobase/CustomerPortal to the internal test environment, for a branch at its current head: run it by hand with
+# A manual redeploy of the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com), for a branch at its current head: run it by hand with
 #
 #   gh workflow run customerportal-deploy.yml -R 2013xile/nocobase-ci -f ref=main
 #
@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 60
     # A deployment in progress is never cancelled; the one waiting behind it is replaced by a newer one.
     concurrency:
-      group: customerportal-internal-deploy
+      group: customerportal-deploy
       cancel-in-progress: false
     steps:
       - name: Check out trusted CI helpers
