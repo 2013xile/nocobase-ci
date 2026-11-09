@@ -203,13 +203,14 @@ jobs:
 
   # The application's Vitest suite (`pnpm test`) on the pull request merged into its base: the server and client tests
   # start the whole application on SQLite test databases, so the jobs need no database and no secret beyond the
-  # checkout. The front end (the `client` project, about 5 minutes one file at a time) runs in one job and the back end
-  # (the `node` project: server, database, project and CLI tests, about 20 minutes) in two Vitest shards, which divide
-  # its test files. Each job runs four files at a time (`--fileParallelism`, the runner's four CPUs; the application's
-  # own config runs one at a time for local runs): each file starts its own application on its own databases, and test
-  # applications skip App Foundation's start-up scan (`@nocobase/app-testing` 0.1.0-beta.9), which used to saturate the
-  # CPUs. Every job takes a few minutes. `Test` summarizes them and is the check nocobase-bot mirrors (each part shows
-  # it in progress). The `no-preview` label does not skip them.
+  # checkout. The front end (the `client` project, about 5 minutes) runs in one job, one file at a time as the
+  # application's config says: run side by side its page tests outwait Testing Library's waits. The back end (the
+  # `node` project: server, database, project and CLI tests, about 20 minutes one file at a time) runs in three Vitest
+  # shards, which divide its test files, four files at a time (`--fileParallelism`, the runner's four CPUs): each file
+  # starts its own application on its own databases, and test applications skip App Foundation's start-up scan
+  # (`@nocobase/app-testing` 0.1.0-beta.9), which used to saturate the CPUs. Every job takes about five minutes. `Test`
+  # summarizes them and is the check nocobase-bot mirrors (each part shows it in progress). The `no-preview` label does
+  # not skip them.
   test-shard:
     name: Test (${{ matrix.name }})
     if: ${{ inputs.event_name == 'pull_request' }}
@@ -219,9 +220,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: frontend, project: client, shard: 1/1 }
-          - { name: backend 1/2, project: node, shard: 1/2 }
-          - { name: backend 2/2, project: node, shard: 2/2 }
+          - { name: frontend, project: client, shard: 1/1, parallel: false }
+          - { name: backend 1/3, project: node, shard: 1/3, parallel: true }
+          - { name: backend 2/3, project: node, shard: 2/3, parallel: true }
+          - { name: backend 3/3, project: node, shard: 3/3, parallel: true }
     env:
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -265,9 +267,11 @@ jobs:
       # once would race to create it.
       - name: Test
         working-directory: customerportal
+        env:
+          PARALLEL: ${{ matrix.parallel && '--fileParallelism --maxWorkers=4' || '' }}
         run: |
           mkdir -p /tmp/carbone_render
-          pnpm test --project ${{ matrix.project }} --shard=${{ matrix.shard }} --fileParallelism --maxWorkers=4
+          pnpm test --project ${{ matrix.project }} --shard=${{ matrix.shard }} $PARALLEL
 
   test:
     name: Test
