@@ -121,16 +121,18 @@ test('sets up Node.js before installing the nb-studio CLI, which carries no Node
   assert.ok(node !== -1 && cli !== -1 && node < cli);
 });
 
-test('runs the application\'s test suite, front end in one job and back end in five shards, on every pull request, with no secret beyond the checkout\'s', () => {
+test('runs the application\'s test suite, front end in three shards and back end in twelve, on every pull request, with no secret beyond the checkout\'s', () => {
   const source = job('test-shard');
   assert.match(source, /\n      fail-fast: false\n/u);
   const parts = [...source.matchAll(/^ {10}- \{ name: (.+), project: (.+), shard: (.+) \}$/gmu)].map((match) => match.slice(1));
   assert.deepEqual(parts, [
-    ['frontend', 'client', '1/1'],
-    ...[1, 2, 3, 4, 5].map((n) => [`backend ${n}/5`, 'node', `${n}/5`]),
+    ...[1, 2, 3].map((n) => [`frontend ${n}/3`, 'client', `${n}/3`]),
+    ...Array.from({ length: 12 }, (_, i) => [`backend ${i + 1}/12`, 'node', `${i + 1}/12`]),
   ]);
   assert.match(source, /working-directory: customerportal\n        run: pnpm install --frozen-lockfile\n/u);
-  assert.match(source, /working-directory: customerportal\n        run: pnpm test --project \$\{\{ matrix\.project \}\} --shard=\$\{\{ matrix\.shard \}\} --fileParallelism --maxWorkers=4\n/u);
+  assert.match(source, /working-directory: customerportal\n        run: pnpm test --project \$\{\{ matrix\.project \}\} --shard=\$\{\{ matrix\.shard \}\}\n/u);
+  // One file at a time, as the application's config says.
+  assert.doesNotMatch(source, /--fileParallelism|--maxWorkers/u);
   // The no-preview label skips only the preview.
   assert.doesNotMatch(source, /no-preview|SKIP_LABEL|steps\.gate/u);
   assert.deepEqual([...source.matchAll(/secrets\.([A-Z_]+)/gu)].map((match) => match[1]), ['NOCOBASE_APP_PRIVATE_KEY']);
