@@ -201,20 +201,29 @@ jobs:
           NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
 
-  # The application's Vitest suite (`pnpm test`) on the pull request merged into its base, as `pnpm check` runs it: the
-  # server and client tests start the whole application on SQLite test databases, so the jobs need no database and no
-  # secret beyond the checkout. The suite is split into three shards by Vitest's `--shard`, which divides the test
-  # files; `Test` summarizes them and is the check nocobase-bot mirrors (each shard shows it in progress). The
+  # The application's Vitest suite (`pnpm test`) on the pull request merged into its base: the server and client tests
+  # start the whole application on SQLite test databases, so the jobs need no database and no secret beyond the
+  # checkout. The front end (the `client` project) runs in one job and the back end (the `node` project: server,
+  # database, project and CLI tests, about five times as long) in five Vitest shards, which divide its test files. Each
+  # job runs its files four at a time (`--fileParallelism`, the runner's four CPUs): the application's own config runs
+  # one at a time for local runs, and each file starts its own application on its own databases. Every job takes about
+  # five minutes. `Test` summarizes them and is the check nocobase-bot mirrors (each part shows it in progress). The
   # `no-preview` label does not skip them.
   test-shard:
-    name: Test (${{ matrix.shard }}/3)
+    name: Test (${{ matrix.name }})
     if: ${{ inputs.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        include:
+          - { name: frontend, project: client, shard: 1/1 }
+          - { name: backend 1/5, project: node, shard: 1/5 }
+          - { name: backend 2/5, project: node, shard: 2/5 }
+          - { name: backend 3/5, project: node, shard: 3/5 }
+          - { name: backend 4/5, project: node, shard: 4/5 }
+          - { name: backend 5/5, project: node, shard: 5/5 }
     env:
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -256,7 +265,7 @@ jobs:
 
       - name: Test
         working-directory: customerportal
-        run: pnpm test --shard=${{ matrix.shard }}/3
+        run: pnpm test --project ${{ matrix.project }} --shard=${{ matrix.shard }} --fileParallelism --maxWorkers=4
 
   test:
     name: Test

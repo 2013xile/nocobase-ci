@@ -28,7 +28,7 @@ test('takes exactly the seven forwarded fields and is named after the request', 
 
 test('has only the jobs nocobase-bot mirrors, each for its own event', () => {
   const jobs = [...workflow.matchAll(/^  ([a-z][a-z0-9-]*):\n    name: (.+)$/gmu)].map((match) => match.slice(1));
-  assert.deepEqual(jobs, [['preview', 'Preview'], ['test-shard', 'Test (${{ matrix.shard }}/3)'], ['test', 'Test'], ['deploy', 'Deploy']]);
+  assert.deepEqual(jobs, [['preview', 'Preview'], ['test-shard', 'Test (${{ matrix.name }})'], ['test', 'Test'], ['deploy', 'Deploy']]);
   assert.match(job('preview'), /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u);
   assert.match(job('test-shard'), /\n    if: \$\{\{ inputs\.event_name == 'pull_request' \}\}\n/u);
   assert.match(job('deploy'), /\n    if: \$\{\{ inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u);
@@ -121,11 +121,16 @@ test('sets up Node.js before installing the nb-studio CLI, which carries no Node
   assert.ok(node !== -1 && cli !== -1 && node < cli);
 });
 
-test('runs the application\'s test suite in three shards on every pull request, with no secret beyond the checkout\'s', () => {
+test('runs the application\'s test suite, front end in one job and back end in five shards, on every pull request, with no secret beyond the checkout\'s', () => {
   const source = job('test-shard');
-  assert.match(source, /\n      fail-fast: false\n      matrix:\n        shard: \[1, 2, 3\]\n/u);
+  assert.match(source, /\n      fail-fast: false\n/u);
+  const parts = [...source.matchAll(/^ {10}- \{ name: (.+), project: (.+), shard: (.+) \}$/gmu)].map((match) => match.slice(1));
+  assert.deepEqual(parts, [
+    ['frontend', 'client', '1/1'],
+    ...[1, 2, 3, 4, 5].map((n) => [`backend ${n}/5`, 'node', `${n}/5`]),
+  ]);
   assert.match(source, /working-directory: customerportal\n        run: pnpm install --frozen-lockfile\n/u);
-  assert.match(source, /working-directory: customerportal\n        run: pnpm test --shard=\$\{\{ matrix\.shard \}\}\/3\n/u);
+  assert.match(source, /working-directory: customerportal\n        run: pnpm test --project \$\{\{ matrix\.project \}\} --shard=\$\{\{ matrix\.shard \}\} --fileParallelism --maxWorkers=4\n/u);
   // The no-preview label skips only the preview.
   assert.doesNotMatch(source, /no-preview|SKIP_LABEL|steps\.gate/u);
   assert.deepEqual([...source.matchAll(/secrets\.([A-Z_]+)/gu)].map((match) => match[1]), ['NOCOBASE_APP_PRIVATE_KEY']);
