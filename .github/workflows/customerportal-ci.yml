@@ -202,13 +202,19 @@ jobs:
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
 
   # The application's Vitest suite (`pnpm test`) on the pull request merged into its base, as `pnpm check` runs it: the
-  # server and client tests start the whole application on SQLite test databases, so the job needs no database and no
-  # secret beyond the checkout. The `no-preview` label does not skip it.
-  test:
-    name: Test
+  # server and client tests start the whole application on SQLite test databases, so the jobs need no database and no
+  # secret beyond the checkout. The suite is split into three shards by Vitest's `--shard`, which divides the test
+  # files; `Test` summarizes them and is the check nocobase-bot mirrors (each shard shows it in progress). The
+  # `no-preview` label does not skip them.
+  test-shard:
+    name: Test (${{ matrix.shard }}/3)
     if: ${{ inputs.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -250,7 +256,22 @@ jobs:
 
       - name: Test
         working-directory: customerportal
-        run: pnpm test
+        run: pnpm test --shard=${{ matrix.shard }}/3
+
+  test:
+    name: Test
+    needs: test-shard
+    if: ${{ always() && needs.test-shard.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every test shard
+        env:
+          RESULT: ${{ needs.test-shard.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "One or more test shards concluded with $RESULT."
+            exit 1
+          fi
 
   # Builds exactly `head_sha`, the commit the check is on, never the branch as it is now, so a newer push cannot make this
   # check deploy code it is not about. The job's concurrency group is shared with customerportal-deploy.yml (the manual
