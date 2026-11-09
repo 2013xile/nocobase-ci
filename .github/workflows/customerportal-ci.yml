@@ -5,8 +5,8 @@ run-name: customerportal-ci:${{ inputs.request_id }}
 # nocobase-bot (docs/ci-forwarding.md there), which mirrors each job below as a check run of the same name on
 # nocobase/CustomerPortal. The job names are that protocol, and which job runs depends on the event, as in studio-ci.yml:
 #
-# - pull requests: `Preview`. The bot forwards every pull request from a branch of the repository itself, whatever its
-#   target, never a fork's: the preview runs the pull request's code next to the Studio key.
+# - pull requests: `Preview` and `Test`. The bot forwards every pull request from a branch of the repository itself,
+#   whatever its target, never a fork's: the preview runs the pull request's code next to the Studio key.
 # - pushes to `main`: `Deploy`, which builds the pushed commit into an image and deploys it to the production environment (https://customer.nocobase.com).
 #   The bot forwards no other branch and no push whose head commit says `[skip ci]`.
 #
@@ -200,6 +200,57 @@ jobs:
         env:
           NB_STUDIO_API_KEY: ${{ secrets.CUSTOMERPORTAL_NB_STUDIO_API_KEY }}
         run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
+
+  # The application's Vitest suite (`pnpm test`) on the pull request merged into its base, as `pnpm check` runs it: the
+  # server and client tests start the whole application on SQLite test databases, so the job needs no database and no
+  # secret beyond the checkout. The `no-preview` label does not skip it.
+  test:
+    name: Test
+    if: ${{ inputs.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Check out fixed source snapshot
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: CustomerPortal
+          path: customerportal
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: customerportal/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        working-directory: customerportal
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        working-directory: customerportal
+        run: pnpm test
 
   # Builds exactly `head_sha`, the commit the check is on, never the branch as it is now, so a newer push cannot make this
   # check deploy code it is not about. The job's concurrency group is shared with customerportal-deploy.yml (the manual
