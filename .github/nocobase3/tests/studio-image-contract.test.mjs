@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,45 +61,8 @@ function nameTags({ ref = 'dev' } = {}) {
   }
 }
 
-// Runs the stamp step against manifests at `versions` and returns what it wrote and reported.
-function stampVersions(versions, { stamp = '20261019081500' } = {}) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'studio-stamp-'));
-  const manifests = {
-    '@nocobase/studio': '.',
-    '@nocobase/studio-cli': 'packages/studio-cli',
-    '@nocobase/agent-runner': 'vendor/nocobase3/packages/app/agent-runner',
-  };
-  try {
-    for (const [name, directory] of Object.entries(manifests)) {
-      mkdirSync(path.join(dir, directory), { recursive: true });
-      writeFileSync(
-        path.join(dir, directory, 'package.json'),
-        JSON.stringify({ name, version: versions[name], private: false }, null, 2),
-      );
-    }
-    const output = path.join(dir, 'output');
-    writeFileSync(output, '');
-    const result = spawnSync('bash', ['-e', '-c', script('Stamp dev versions')], {
-      cwd: dir,
-      encoding: 'utf8',
-      env: { ...process.env, STAMP: stamp, GITHUB_OUTPUT: output },
-    });
-    const written = Object.fromEntries(
-      Object.entries(manifests).map(([name, directory]) => [
-        name,
-        JSON.parse(readFileSync(path.join(dir, directory, 'package.json'), 'utf8')),
-      ]),
-    );
-    const text = readFileSync(output, 'utf8');
-    const reported = text.includes('versions<<EOF\n') ? text.split('versions<<EOF\n')[1].split('EOF')[0].trim().split('\n') : [];
-    return { status: result.status, written, reported };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 test('packs the served CLI and runner under RUNNER_TEMP, on the workspace disk', () => {
-  assert.match(job('image'), /- name: Build dist\n        env:\n          TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
+  assert.match(job('image'), /- name: Build EE dist\n        id: build_dist\n        env:\n          TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
 });
 
 test('takes the ref to build, and no release mode', () => {
@@ -165,7 +128,7 @@ test('checks out the private nocobase/studio at the ref, with its submodule, thr
   assert.match(checkout, /submodules: true\n/u);
   // Revoked before any of Studio's own code runs.
   assert.ok(
-    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Install dependencies', { in: image })),
+    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Build EE dist', { in: image })),
   );
   const code = workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
   assert.doesNotMatch(code, /nocobase\/nocobase\b(?!-ci)|packages\/apps\/studio|packages\/tools\/studio-cli/u);
@@ -174,15 +137,14 @@ test('checks out the private nocobase/studio at the ref, with its submodule, thr
 test('builds at the repository root with the pnpm of its packageManager', () => {
   assert.match(step('Set up pnpm'), /package_json_file: package\.json\n/u);
   assert.doesNotMatch(workflow, /working-directory:|--filter|NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD/u);
-  assert.match(step('Install dependencies'), /run: pnpm install --frozen-lockfile\n/u);
-  assert.match(step('Build and push'), /context: \.\n          file: Dockerfile\n/u);
+  assert.match(step('Build and push'), /context: \$\{\{ runner\.temp \}\}\/studio-image\n          file: \$\{\{ runner\.temp \}\}\/studio-image\/Dockerfile\n/u);
 });
 
 test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
   // `pnpm build` packs nb-studio and the runner into dist/runners; nothing builds or copies them separately.
   assert.doesNotMatch(workflow, /cli build|runners-dist/u);
-  assert.match(step('Build dist'), /run: pnpm build --target \$\{\{ matrix\.target \}\}\n/u);
-  assert.match(step('Build and push'), /build-args: DIST=prebuilt\n/u);
+  assert.match(step('Build EE dist'), /pnpm build:image --edition studio-ee --target "\$TARGET"/u);
+  assert.match(step('Build and push'), /build-args: \|\n            DIST=prebuilt\n            EDITION=studio-ee\n            SOURCE_REVISION=/u);
 });
 
 test('builds linux/amd64 and linux/arm64 in parallel, each from a dist/ built for its own platform', () => {
@@ -200,7 +162,7 @@ test('builds linux/amd64 and linux/arm64 in parallel, each from a dist/ built fo
 test('pushes each platform by digest and tags them under one multi-platform manifest', () => {
   const push = step('Build and push');
   assert.doesNotMatch(push, /if:|tags:|push: true/u);
-  assert.match(push, /outputs: type=image,name=\$\{\{ secrets\.ALI_DOCKER_REGISTRY \}\}\/nocobase\/studio,push-by-digest=true,name-canonical=true,push=true\n/u);
+  assert.match(push, /outputs: type=image,name=\$\{\{ secrets\.ALI_DOCKER_REGISTRY \}\}\/nocobase\/studio-ee,push-by-digest=true,name-canonical=true,push=true\n/u);
   assert.match(step('Upload the digest'), /name: digest-\$\{\{ matrix\.arch \}\}\n/u);
   const manifest = job('manifest');
   assert.match(manifest, /    needs: \[prepare, image\]\n/u);
@@ -216,58 +178,15 @@ test('lists the tags in the summary', () => {
   assert.match(summary, /GITHUB_STEP_SUMMARY/u);
 });
 
-test('stamps dev versions on Studio, nb-studio and the runner before anything is built', () => {
-  const stamp = step('Stamp dev versions');
-  assert.doesNotMatch(stamp, /        if:/u);
-  const at = workflow.indexOf(stamp);
-  assert.ok(at > workflow.indexOf(step('Install dependencies')));
-  assert.ok(at < workflow.indexOf(step('Build dist')));
-  // One timestamp from `prepare`, so both platforms carry the same versions.
-  assert.match(stamp, /STAMP: \$\{\{ needs\.prepare\.outputs\.stamp \}\}\n/u);
-  assert.doesNotMatch(stamp, /date /u);
+test('delegates stamping to the isolated edition build using one immutable source and timestamp', () => {
+  const build = step('Build EE dist');
+  assert.match(build, /COMMIT: \$\{\{ needs\.prepare\.outputs\.commit \}\}/u);
+  assert.match(build, /STAMP: \$\{\{ needs\.prepare\.outputs\.stamp \}\}/u);
+  assert.match(build, /--source-ref "\$COMMIT" --dev-stamp "\$STAMP" --out "\$RUNNER_TEMP\/studio-image"/u);
+  assert.doesNotMatch(workflow, /manifest\.stamped|pnpm install|name: Stamp dev versions/u);
+  assert.match(job('image'), /version: \$\{\{ steps\.build_dist\.outputs\.version \}\}/u);
+  assert.match(step('Summary'), /VERSION: \$\{\{ needs\.image\.outputs\.version \}\}/u);
 });
-
-test('appends .dev.<UTC timestamp> to a prerelease and -dev.<timestamp> to a plain version', () => {
-  const { status, written, reported } = stampVersions({
-    '@nocobase/studio': '1.0.0-beta.51',
-    '@nocobase/studio-cli': '0.1.0-beta.2',
-    '@nocobase/agent-runner': '0.1.0',
-  });
-  assert.equal(status, 0);
-  const studio = written['@nocobase/studio'].version;
-  const cli = written['@nocobase/studio-cli'].version;
-  const runner = written['@nocobase/agent-runner'].version;
-  assert.equal(studio, '1.0.0-beta.51.dev.20261019081500');
-  assert.equal(cli, '0.1.0-beta.2.dev.20261019081500');
-  assert.equal(runner, '0.1.0-dev.20261019081500');
-  assert.deepEqual(reported, [`@nocobase/studio@${studio}`, `@nocobase/studio-cli@${cli}`, `@nocobase/agent-runner@${runner}`]);
-  assert.equal(written['@nocobase/studio'].private, false, 'other manifest fields are kept');
-});
-
-test('fails the stamp when a manifest has no version', () => {
-  const { status } = stampVersions({
-    '@nocobase/studio': '1.0.0-beta.51',
-    '@nocobase/studio-cli': undefined,
-    '@nocobase/agent-runner': '0.1.0-beta.3',
-  });
-  assert.notEqual(status, 0);
-});
-
-test('fails the stamp without a timestamp from prepare', () => {
-  const { status } = stampVersions(
-    { '@nocobase/studio': '1.0.0-beta.51', '@nocobase/studio-cli': '0.1.0', '@nocobase/agent-runner': '0.1.0' },
-    { stamp: '' },
-  );
-  assert.notEqual(status, 0);
-});
-
-test('prints the stamped versions in the summary', () => {
-  assert.match(job('image'), /      versions: \$\{\{ steps\.stamp\.outputs\.versions \}\}\n/u);
-  const summary = step('Summary');
-  assert.match(summary, /VERSIONS: \$\{\{ needs\.image\.outputs\.versions \}\}/u);
-  assert.match(summary, /Stamped versions:/u);
-});
-
 
 test('requires QA from the Studio checkout, with no separate source pin or build-time installer', () => {
   const guard = step('Require the in-repository testing package');
@@ -275,6 +194,6 @@ test('requires QA from the Studio checkout, with no separate source pin or build
   assert.match(guard, /packages\/app-plugin-testing\/package\.json/u);
   assert.match(guard, /testing\.private !== true/u);
   assert.ok(workflow.indexOf(guard) > workflow.indexOf(step('Revoke the source token', { in: job('image') })));
-  assert.ok(workflow.indexOf(guard) < workflow.indexOf(step('Install dependencies')));
+  assert.ok(workflow.indexOf(guard) < workflow.indexOf(step('Build EE dist')));
   assert.doesNotMatch(workflow, /qa_plugin_sha|studio-qa-checkout|qa-source|assembly: image|--no-frozen-lockfile/u);
 });

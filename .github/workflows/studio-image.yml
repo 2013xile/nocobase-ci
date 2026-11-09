@@ -1,7 +1,7 @@
 name: Studio image
 run-name: studio-image:${{ inputs.ref }}
 
-# Builds NocoBase Studio's internal image from the private nocobase/studio repository, from any branch, tag or commit,
+# Builds NocoBase Studio EE's internal image from the private nocobase/studio repository, from any branch, tag or commit,
 # and pushes it to the internal registry as one image for linux/amd64 and linux/arm64: each platform builds its own
 # dist/ and image in parallel, and a last job tags both under one multi-platform manifest. Studio is the repository root
 # and the framework is the public submodule vendor/nocobase3; nb-studio's brand package is packages/studio-cli. Studio's
@@ -16,7 +16,7 @@ run-name: studio-image:${{ inputs.ref }}
 # The private testing workspace package is part of the Studio source checkout. Require it before installing; never
 # fall back to a separate private-source overlay or publish a normal image missing QA.
 #
-# Studio is no longer released to public registries: this internal image is the only one.
+# This workflow publishes only studio-ee. Formal releases publish both editions through v3-studio-release.yml.
 #
 # The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`).
 #
@@ -125,7 +125,7 @@ jobs:
             target: linux-arm64
     outputs:
       # The same on both platforms: one commit, one stamp.
-      versions: ${{ steps.stamp.outputs.versions }}
+      version: ${{ steps.build_dist.outputs.version }}
     env:
       # Studio's build typechecks it together with the framework's sources, which needs more than the default heap.
       NODE_OPTIONS: --max-old-space-size=6144
@@ -172,8 +172,9 @@ jobs:
           const app = JSON.parse(readFileSync('package.json', 'utf8'));
           const testing = JSON.parse(readFileSync('packages/app-plugin-testing/package.json', 'utf8'));
           if (app.dependencies?.['@nocobase/app-plugin-testing'] !== 'workspace:*' ||
-              testing.name !== '@nocobase/app-plugin-testing' || testing.private !== true) {
-            throw new Error('Studio images require the private in-repository testing package.');
+              testing.name !== '@nocobase/app-plugin-testing' || testing.private !== true ||
+              !app.scripts?.['build:image']) {
+            throw new Error('Studio EE images require the edition build entry and the private in-repository testing package.');
           }
           NODE
 
@@ -189,53 +190,20 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Internal images only: give Studio, nb-studio (@nocobase/studio-cli's version) and nocobase-runner a dev
-      # version, so runners and CLIs see the build as newer than the release it is based on and upgrade. Before
-      # `pnpm build`, which records these versions and packs nb-studio and the runner at them. 1.0.0-beta.51 becomes
-      # 1.0.0-beta.51.dev.<UTC YYYYMMDDHHMMSS>, which sorts above it and below 1.0.0-beta.52; a version without a
-      # prerelease part takes -dev.<timestamp>. The timestamp comes from `prepare`, so both platforms carry the same
-      # versions. The checkout is changed, never the repository.
-      - name: Stamp dev versions
-        id: stamp
-        env:
-          STAMP: ${{ needs.prepare.outputs.stamp }}
-        run: |
-          stamp=${STAMP:?no timestamp to stamp}
-          stamped=
-          for manifest in package.json packages/studio-cli/package.json vendor/nocobase3/packages/app/agent-runner/package.json; do
-            version=$(jq -r '.version // empty' "$manifest")
-            if [ -z "$version" ]; then
-              echo "::error::$manifest has no version to stamp."
-              exit 1
-            fi
-            case "$version" in
-              *-*) dev="${version}.dev.${stamp}" ;;
-              *) dev="${version}-dev.${stamp}" ;;
-            esac
-            jq --arg version "$dev" '.version = $version' "$manifest" > "$manifest.stamped"
-            mv "$manifest.stamped" "$manifest"
-            stamped="${stamped}$(jq -r '.name' "$manifest")@${dev}"$'\n'
-          done
-          printf '%s' "$stamped"
-          {
-            echo "versions<<EOF"
-            printf '%s' "$stamped"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # dist/ is built here, with this job's heap, and the image takes it prebuilt. Studio's build first builds the
-      # workspace packages it depends on, and dist/ includes dist/runners, the nb-studio and nocobase-runner packages
-      # Studio serves. `--target` swaps in the native binaries of the image's platform; the Dockerfile refuses a dist/
-      # built for another one.
-      # TMPDIR on RUNNER_TEMP: Node.js for each packed platform is extracted under it and renamed into
-      # node_modules/.cache, which fails with EXDEV where /tmp is its own filesystem, as on ubuntu-26.04.
-      - name: Build dist
+      # build:image installs the frozen graph in an isolated checkout, stamps all served packages there,
+      # selects EE and checks the final artifact. The outer checkout stays at the resolved source revision.
+      # Keep temporary packages on the runner's workspace disk to avoid cross-device renames.
+      - name: Build EE dist
+        id: build_dist
         env:
           TMPDIR: ${{ runner.temp }}
-        run: pnpm build --target ${{ matrix.target }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          STAMP: ${{ needs.prepare.outputs.stamp }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          pnpm build:image --edition studio-ee --target "$TARGET" \
+            --source-ref "$COMMIT" --dev-stamp "$STAMP" --out "$RUNNER_TEMP/studio-image"
+          echo "version=$(jq -r '.version' "$RUNNER_TEMP/studio-image/build-metadata.json")" >> "$GITHUB_OUTPUT"
 
       - name: Sign in to the registry
         uses: docker/login-action@v3
@@ -258,11 +226,14 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile
+          context: ${{ runner.temp }}/studio-image
+          file: ${{ runner.temp }}/studio-image/Dockerfile
           platforms: linux/${{ matrix.arch }}
-          build-args: DIST=prebuilt
-          outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio,push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            DIST=prebuilt
+            EDITION=studio-ee
+            SOURCE_REVISION=${{ needs.prepare.outputs.commit }}
+          outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio-ee,push-by-digest=true,name-canonical=true,push=true
           provenance: false
 
       - name: Export the digest
@@ -309,7 +280,7 @@ jobs:
           TAGS: ${{ needs.prepare.outputs.tags }}
           DIGESTS: ${{ runner.temp }}/digests
         run: |
-          image="${REGISTRY}/nocobase/studio"
+          image="${REGISTRY}/nocobase/studio-ee"
           args=()
           while IFS= read -r tag; do
             args+=(--tag "${image}:${tag}")
@@ -325,18 +296,16 @@ jobs:
           TAGS: ${{ needs.prepare.outputs.tags }}
           REF: ${{ inputs.ref }}
           SHA: ${{ needs.prepare.outputs.sha }}
-          VERSIONS: ${{ needs.image.outputs.versions }}
+          VERSION: ${{ needs.image.outputs.version }}
         run: |
           {
-            echo '### Studio image'
+            echo '### Studio EE image'
             echo
             echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64 and linux/arm64, serving the nb-studio and runner packages its build packed."
             echo
-            printf '%s\n' "$TAGS" | sed 's/^/- `nocobase\/studio:/; s/$/`/'
-            if [ -n "$VERSIONS" ]; then
-              echo
-              echo 'Stamped versions:'
-              echo
-              printf '%s\n' "$VERSIONS" | sed '/^$/d; s/^/- `/; s/$/`/'
-            fi
+            while IFS= read -r tag; do
+              echo "- \`nocobase/studio-ee:${tag}\`"
+            done <<< "$TAGS"
+            echo
+            echo "Version: \`${VERSION}\` (shared dev stamp for Studio, nb-studio and runner)."
           } >> "$GITHUB_STEP_SUMMARY"
