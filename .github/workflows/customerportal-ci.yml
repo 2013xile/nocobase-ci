@@ -203,13 +203,13 @@ jobs:
 
   # The application's Vitest suite (`pnpm test`) on the pull request merged into its base: the server and client tests
   # start the whole application on SQLite test databases, so the jobs need no database and no secret beyond the
-  # checkout. The suite runs one file at a time, as the application's config says, in Vitest shards that divide the
-  # test files: the front end (the `client` project, about 13 minutes in all) in three and the back end (the `node`
-  # project: server, database, project and CLI tests, about 60 minutes, most of it starting an application per file)
-  # in twelve, so each job takes about five minutes. Running files side by side in one job is not safe yet: the
-  # applications' start-up scans saturate the runner's CPUs and time tests out, and carbone shares one temporary
-  # directory. `Test` summarizes the jobs and is the check nocobase-bot mirrors (each part shows it in progress). The
-  # `no-preview` label does not skip them.
+  # checkout. The front end (the `client` project, about 5 minutes one file at a time) runs in one job and the back end
+  # (the `node` project: server, database, project and CLI tests, about 20 minutes) in two Vitest shards, which divide
+  # its test files. Each job runs four files at a time (`--fileParallelism`, the runner's four CPUs; the application's
+  # own config runs one at a time for local runs): each file starts its own application on its own databases, and test
+  # applications skip App Foundation's start-up scan (`@nocobase/app-testing` 0.1.0-beta.9), which used to saturate the
+  # CPUs. Every job takes a few minutes. `Test` summarizes them and is the check nocobase-bot mirrors (each part shows
+  # it in progress). The `no-preview` label does not skip them.
   test-shard:
     name: Test (${{ matrix.name }})
     if: ${{ inputs.event_name == 'pull_request' }}
@@ -219,21 +219,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: frontend 1/3, project: client, shard: 1/3 }
-          - { name: frontend 2/3, project: client, shard: 2/3 }
-          - { name: frontend 3/3, project: client, shard: 3/3 }
-          - { name: backend 1/12, project: node, shard: 1/12 }
-          - { name: backend 2/12, project: node, shard: 2/12 }
-          - { name: backend 3/12, project: node, shard: 3/12 }
-          - { name: backend 4/12, project: node, shard: 4/12 }
-          - { name: backend 5/12, project: node, shard: 5/12 }
-          - { name: backend 6/12, project: node, shard: 6/12 }
-          - { name: backend 7/12, project: node, shard: 7/12 }
-          - { name: backend 8/12, project: node, shard: 8/12 }
-          - { name: backend 9/12, project: node, shard: 9/12 }
-          - { name: backend 10/12, project: node, shard: 10/12 }
-          - { name: backend 11/12, project: node, shard: 11/12 }
-          - { name: backend 12/12, project: node, shard: 12/12 }
+          - { name: frontend, project: client, shard: 1/1 }
+          - { name: backend 1/2, project: node, shard: 1/2 }
+          - { name: backend 2/2, project: node, shard: 2/2 }
     env:
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
@@ -273,9 +261,13 @@ jobs:
         working-directory: customerportal
         run: pnpm install --frozen-lockfile
 
+      # carbone (contract documents) creates its fixed temporary directory when it loads, and two files loading it at
+      # once would race to create it.
       - name: Test
         working-directory: customerportal
-        run: pnpm test --project ${{ matrix.project }} --shard=${{ matrix.shard }}
+        run: |
+          mkdir -p /tmp/carbone_render
+          pnpm test --project ${{ matrix.project }} --shard=${{ matrix.shard }} --fileParallelism --maxWorkers=4
 
   test:
     name: Test
