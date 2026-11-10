@@ -70,10 +70,11 @@ test('accepts only the forwarded source repositories and a plain checkout path',
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'CustomerPortal', targetBranch: 'main', checkoutPath: 'customerportal' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'v3-pro-registry', targetBranch: 'main', checkoutPath: 'v3-pro-registry' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase-bot', targetBranch: 'main', checkoutPath: 'nocobase-bot' }));
-  rejects({ repository: 'website-v3' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry.');
-  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry.');
-  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry.');
-  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry.');
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'verdaccio', targetBranch: 'next', checkoutPath: 'verdaccio' }));
+  rejects({ repository: 'website-v3' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
+  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
+  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
+  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
   rejects({ checkoutPath: '../outside' }, 'path must be a single lowercase directory name.');
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
 });

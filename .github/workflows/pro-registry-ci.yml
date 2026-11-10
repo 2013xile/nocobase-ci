@@ -142,7 +142,7 @@ jobs:
           path: v3-pro-registry
           image: nocobase/pro-registry
           sha: ${{ inputs.head_sha }}
-          push-main: ${{ inputs.target_branch == 'main' }}
+          moving-tag: ${{ inputs.target_branch == 'main' && 'main' || '' }}
           build-args: NPM_REGISTRY=https://registry.npmjs.org/
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
           registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}

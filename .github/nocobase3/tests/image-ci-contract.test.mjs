@@ -11,18 +11,19 @@ const INPUTS = ['request_id', 'event_name', 'head_sha', 'base_sha', 'target_bran
 const rows = [
   { file: 'bot-ci.yml', prefix: 'bot-ci', repository: 'nocobase-bot', image: 'nocobase-bot', build: 'bot-build', deploy: 'bot-deploy', secrets: 'BOT_DEPLOY', jobs: ['Build', 'Deploy'] },
   { file: 'pro-registry-ci.yml', prefix: 'pro-registry-ci', repository: 'v3-pro-registry', image: 'pro-registry', build: 'pro-registry-build', deploy: 'pro-registry-deploy', secrets: 'PRO_REGISTRY_DEPLOY', jobs: ['Test', 'Build', 'Deploy'] },
-].map((row) => ({ ...row, workflow: read(`.github/workflows/${row.file}`) }));
+  { file: 'verdaccio-ci.yml', prefix: 'verdaccio-ci', repository: 'verdaccio', image: 'verdaccio', build: 'verdaccio-build', deploy: 'verdaccio-deploy', secrets: 'VERDACCIO_DEPLOY', jobs: ['Test', 'Build', 'Deploy'], branch: 'next', moving: 'alpha' },
+].map((row) => ({ branch: 'main', moving: 'main', ...row, workflow: read(`.github/workflows/${row.file}`) }));
 
 test('image-push builds linux/amd64 without attestations, tagging sha-<short sha> and main only when asked', () => {
   assert.match(action, /platforms: linux\/amd64\n        provenance: false\n        sbom: false\n/u);
   assert.match(action, /\$\{\{ inputs\.registry \}\}\/\$\{\{ inputs\.image \}\}:sha-\$\{\{ steps\.tag\.outputs\.short \}\}\n/u);
-  assert.match(action, /inputs\.push-main == 'true' && format\('\{0\}\/\{1\}:main', inputs\.registry, inputs\.image\) \|\| ''/u);
+  assert.match(action, /inputs\.moving-tag != '' && format\('\{0\}\/\{1\}:\{2\}', inputs\.registry, inputs\.image, inputs\.moving-tag\) \|\| ''/u);
   assert.match(action, /\^\[0-9a-f\]\{40\}\$/u);
   assert.match(action, /short=\$\{SHA:0:7\}/u);
   assert.match(action, /value: sha-\$\{\{ steps\.tag\.outputs\.short \}\}/u);
 });
 
-for (const { file, prefix, repository, image, build, deploy, secrets, jobs, workflow } of rows) {
+for (const { file, prefix, repository, image, build, deploy, secrets, jobs, branch, moving, workflow } of rows) {
   test(`${file} takes the seven forwarded inputs, runs by dispatch only, and is named after the request`, () => {
     assert.match(workflow, new RegExp(`^run-name: ${prefix}:\\$\\{\\{ inputs\\.request_id \\}\\}$`, 'mu'));
     for (const input of INPUTS) assert.match(workflow, new RegExp(`\\n      ${input}:\\n(?:        .+\\n)*?        required: true\\n`, 'u'));
@@ -44,11 +45,11 @@ for (const { file, prefix, repository, image, build, deploy, secrets, jobs, work
 
   test(`${file} builds a push only, replacing an older build but never a deployment`, () => {
     assert.match(workflow, new RegExp(`  build:\\n    name: Build\\n(?:    .+\\n)*?    if: \\$\\{\\{ inputs\\.event_name == 'push' \\}\\}\\n(?:    .+\\n)*?    concurrency:\\n      group: ${build}\\n      cancel-in-progress: true\\n`, 'u'));
-    assert.match(workflow, new RegExp(`uses: \\./\\.github/nocobase3/image-push\\n        with:\\n          path: ${repository}\\n          image: nocobase/${image}\\n          sha: \\$\\{\\{ inputs\\.head_sha \\}\\}\\n          push-main: \\$\\{\\{ inputs\\.target_branch == 'main' \\}\\}\\n`, 'u'));
+    assert.match(workflow, new RegExp(`uses: \\./\\.github/nocobase3/image-push\\n        with:\\n          path: ${repository}\\n          image: nocobase/${image}\\n          sha: \\$\\{\\{ inputs\\.head_sha \\}\\}\\n          moving-tag: \\$\\{\\{ inputs\\.target_branch == '${branch}' && '${moving}' \\|\\| '' \\}\\}\\n`, 'u'));
   });
 
-  test(`${file} deploys the pushed sha tag of main alone, sharing its group with the manual build`, () => {
-    assert.match(workflow, /  deploy:\n    name: Deploy\n    needs: build\n    if: \$\{\{ inputs\.event_name == 'push' && inputs\.target_branch == 'main' \}\}\n/u);
+  test(`${file} deploys the pushed sha tag of ${branch} alone, sharing its group with the manual build`, () => {
+    assert.match(workflow, new RegExp(`  deploy:\\n    name: Deploy\\n    needs: build\\n    if: \\$\\{\\{ inputs\\.event_name == 'push' && inputs\\.target_branch == '${branch}' \\}\\}\\n`, 'u'));
     assert.match(workflow, new RegExp(`concurrency:\\n      group: ${deploy}\\n      cancel-in-progress: false\\n`, 'u'));
     assert.match(workflow, /uses: \.\/\.github\/nocobase3\/ssh-deploy\n/u);
     assert.match(workflow, /tag: \$\{\{ needs\.build\.outputs\.tag \}\}\n/u);
@@ -63,4 +64,14 @@ test('pro-registry-ci.yml tests every event, and builds only once the tests pass
   assert.match(workflow, /  build:\n    name: Build\n    needs: test\n/u);
   assert.ok(workflow.indexOf('run: pnpm typecheck') < workflow.indexOf('  build:\n'));
   assert.ok(workflow.indexOf('run: pnpm test') < workflow.indexOf('  build:\n'));
+});
+
+test('verdaccio-ci.yml tests every event on the Node.js of the image, and builds only once the tests pass', () => {
+  const workflow = rows[2].workflow;
+  assert.match(workflow, /  test:\n    name: Test\n    runs-on: ubuntu-latest\n/u);
+  assert.match(workflow, /  build:\n    name: Build\n    needs: test\n/u);
+  assert.match(workflow, /node-version: 25\.9\.0\n/u);
+  assert.match(read('.github/workflows/verdaccio-image.yml'), /node-version: 25\.9\.0\n/u);
+  assert.match(workflow, /run: npx --yes yarn@1\.22\.22 install --frozen-lockfile\n/u);
+  assert.ok(workflow.indexOf('run: node --test "test/*.test.js"') < workflow.indexOf('  build:\n'));
 });

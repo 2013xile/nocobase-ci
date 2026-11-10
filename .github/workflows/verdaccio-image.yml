@@ -1,0 +1,142 @@
+name: Verdaccio image
+run-name: verdaccio-image:${{ inputs.ref }}
+
+# A manual test and build of the image of pkg.nocobase.com and pkg-src.nocobase.com (NocoBase 2's private registries) from the private nocobase/verdaccio at a `ref`, pushed to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `alpha` when `ref` is `next`, the default branch. A build of any other ref never moves `alpha`. It builds exactly as the forwarded CI does (the composite action image-push).
+#
+# Pull requests and pushes to `next` are tested, built and deployed by verdaccio-ci.yml, which nocobase-bot forwards with the checks `Test`, `Build` and `Deploy`; nothing dispatches this workflow. A build of `next` here is deployed too, by the `deploy` job, in the group `verdaccio-deploy` it shares with verdaccio-ci.yml. See "Image deployments over SSH" in .github/nocobase3/README.md. Run it by hand, with `-f deploy=false` to build `next` without deploying it; any other ref is never deployed:
+#
+#   gh workflow run verdaccio-image.yml -R 2013xile/nocobase-ci -f ref=next
+#
+# This repository is public: nothing uploads the source, and nothing is cached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of nocobase/verdaccio to build.
+        required: true
+        default: next
+        type: string
+      deploy:
+        description: Deploy the image to pkg and pkg-src once it is built; only a build of `next` is ever deployed.
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Test and build the linux/amd64 image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A newer build of the same ref replaces this one; the deployment has its own group and is never cancelled.
+    concurrency:
+      group: verdaccio-image-${{ inputs.ref }}
+      cancel-in-progress: true
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      # A read-only token for nocobase/verdaccio alone, revoked as soon as the source is checked out.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: verdaccio
+          permission-contents: read
+          skip-token-revoke: true
+
+      # Resolves the ref once, so the checkout and the tag name the same commit even if the branch moves meanwhile.
+      - name: Resolve the ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          commit=$(gh api "repos/nocobase/verdaccio/commits/${REF}" --jq .sha)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "sha=${commit:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out verdaccio
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/verdaccio
+          ref: ${{ steps.resolve.outputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: verdaccio
+          persist-credentials: false
+          show-progress: false
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      # The Node.js of the image (Dockerfile) and the yarn 1 its lockfile is written for.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 25.9.0
+
+      - name: Install dependencies
+        working-directory: verdaccio
+        run: npx --yes yarn@1.22.22 install --frozen-lockfile
+
+      - name: Test
+        working-directory: verdaccio/plugins/verdaccio-nocobase
+        run: node --test "test/*.test.js"
+
+      - name: Build and push the image
+        uses: ./.github/nocobase3/image-push
+        with:
+          path: verdaccio
+          image: nocobase/verdaccio
+          sha: ${{ steps.resolve.outputs.commit }}
+          moving-tag: ${{ inputs.ref == 'next' && 'alpha' || '' }}
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+
+  deploy:
+    name: Deploy to pkg and pkg-src
+    needs: image
+    if: ${{ inputs.ref == 'next' && inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A deployment in progress is never cancelled; the one waiting behind it is replaced by a newer one.
+    concurrency:
+      group: verdaccio-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Deploy
+        uses: ./.github/nocobase3/ssh-deploy
+        with:
+          name: pkg and pkg-src
+          tag: sha-${{ needs.image.outputs.sha }}
+          ssh-key: ${{ secrets.VERDACCIO_DEPLOY_SSH_KEY }}
+          deploy-host: ${{ vars.VERDACCIO_DEPLOY_HOST }}
+          known-hosts: ${{ vars.VERDACCIO_DEPLOY_KNOWN_HOSTS }}
+          secret-names: VERDACCIO_DEPLOY_SSH_KEY, VERDACCIO_DEPLOY_HOST or VERDACCIO_DEPLOY_KNOWN_HOSTS

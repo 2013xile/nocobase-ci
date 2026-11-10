@@ -22,7 +22,7 @@ test('checks out the private nocobase/v3-pro-registry at the resolved commit thr
 });
 
 test('builds through the shared image-push action, tagging main only for a build of main', () => {
-  assert.match(workflow, /uses: \.\/\.github\/nocobase3\/image-push\n        with:\n          path: v3-pro-registry\n          image: nocobase\/pro-registry\n          sha: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n          push-main: \$\{\{ inputs\.ref == 'main' \}\}\n/u);
+  assert.match(workflow, /uses: \.\/\.github\/nocobase3\/image-push\n        with:\n          path: v3-pro-registry\n          image: nocobase\/pro-registry\n          sha: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n          moving-tag: \$\{\{ inputs\.ref == 'main' && 'main' \|\| '' \}\}\n/u);
   assert.match(workflow, /repository: nocobase\/v3-pro-registry\n          ref: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n(?:          .+\n)*?          path: v3-pro-registry\n/u);
 });
 
