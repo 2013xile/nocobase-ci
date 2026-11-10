@@ -1,0 +1,80 @@
+name: Deploy an image tag over SSH
+description: Asks a server to deploy one image tag through a deploy script that the server's authorized_keys pins the key to, sending nothing but the tag.
+
+# Shared by bot-image.yml (nocobase-bot on noco-bot) and pro-registry-image.yml (pkg-v3 on noco-hk). The server's authorized_keys restricts the key with `restrict,command="<deploy script>"`, so the key opens no shell and runs nothing else; the script reads the tag from SSH_ORIGINAL_COMMAND, validates it, takes a lock, pulls the image, backs up its SQLite databases, sets IMAGE_TAG in its .env, runs `docker compose up -d`, health-checks, and goes back to the previous tag when that fails, returning non-zero. Its output is the job's log, and exit code 75 means another deployment is running or deployments are paused.
+#
+# Only immutable `sha-<commit>` tags are accepted: the scripts skip a tag they already run, so a moving tag such as `main` would never be redeployed.
+
+inputs:
+  name:
+    description: What is deployed, for the job summary.
+    required: true
+  tag:
+    description: The image tag to deploy, `sha-<7 to 40 hex characters>`.
+    required: true
+  ssh-key:
+    description: The private key the server restricts to its deploy script.
+    required: true
+  deploy-host:
+    description: The server to deploy to.
+    required: true
+  known-hosts:
+    description: The server's host key, one known_hosts line.
+    required: true
+  secret-names:
+    description: The names of the secret and variables that hold the key, host and host key, named in the error when one is missing.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy over SSH
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        TAG: ${{ inputs.tag }}
+        SSH_KEY: ${{ inputs.ssh-key }}
+        DEPLOY_HOST: ${{ inputs.deploy-host }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        SECRET_NAMES: ${{ inputs.secret-names }}
+      run: |
+        set -eu
+        summary() {
+          {
+            echo "### ${NAME} deployment"
+            echo
+            echo "Tag \`${TAG}\`: $1"
+          } >> "$GITHUB_STEP_SUMMARY"
+        }
+        if ! printf %s "$TAG" | grep -Eq '^sha-[0-9a-f]{7,40}$'; then
+          summary 'refused, the tag is malformed.'
+          echo "Refusing to deploy a malformed tag: $TAG" >&2
+          exit 1
+        fi
+        if [ -z "$DEPLOY_HOST" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$SSH_KEY" ]; then
+          summary 'not started, the deploy host, its host key or the SSH key is not configured.'
+          echo "${SECRET_NAMES} is missing from the repository secrets and variables." >&2
+          exit 1
+        fi
+        dir=$(mktemp -d "$RUNNER_TEMP/deploy.XXXXXX")
+        trap 'rm -rf "$dir"' EXIT
+        umask 077
+        printf '%s\n' "$SSH_KEY" > "$dir/key"
+        printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
+        chmod 600 "$dir/key" "$dir/known_hosts"
+        status=0
+        ssh -i "$dir/key" -p 22 \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="$dir/known_hosts" \
+          -o ServerAliveInterval=30 \
+          "root@${DEPLOY_HOST}" "$TAG" || status=$?
+        if [ "$status" -eq 0 ]; then
+          summary 'deployed (or already running).'
+        elif [ "$status" -eq 75 ]; then
+          summary 'not deployed, another deployment is running on the server or deployments are paused.'
+        else
+          summary "failed with exit code ${status}; the server goes back to the previous tag when it can."
+        fi
+        exit "$status"

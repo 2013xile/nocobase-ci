@@ -8,12 +8,18 @@ run-name: bot-image:${{ inputs.ref }}
 # `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default (manifest type
 # application/vnd.oci.empty.v1+json) and the registry rejects them with "unknown manifest class".
 #
-# The server pulls it with the compose file in ~/deploy/docker/nocobase-bot, whose image is
-# registry.cn-beijing.aliyuncs.com/nocobase/nocobase-bot:main. Nothing deploys it: after a build, run
-# `docker compose pull && docker compose up -d` on the server.
+# The server runs it with the compose file in ~/deploy/docker/nocobase-bot (on noco-bot), whose image is
+# registry.cn-beijing.aliyuncs.com/nocobase/nocobase-bot:${IMAGE_TAG}. A build of `main` is then deployed by the `deploy`
+# job: it calls the server over SSH with a key that the server's authorized_keys restricts to
+# /root/deploy/docker/nocobase-bot/deploy.sh, sending only `sha-<short sha>`; the script backs up the forwarding state,
+# sets IMAGE_TAG, restarts the bot, health-checks it and goes back to the previous tag when that fails (the script is
+# kept in nocobase-bot's deploy/deploy.sh). The bot restarts itself this way: its forwarding state is in SQLite under
+# data/, it resumes the requests in progress when it starts, and webhook deliveries refused while it restarts are
+# redelivered.
 #
 # nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/nocobase-bot's `main`; a newer push
-# cancels the build in progress. Run it by hand for any other ref:
+# cancels the build in progress, but never a deployment in progress. Run it by hand for any other ref, which builds
+# without deploying, or with `-f deploy=false` to build `main` without deploying:
 #
 #   gh workflow run bot-image.yml -R 2013xile/nocobase-ci -f ref=main
 
@@ -25,19 +31,26 @@ on:
         required: true
         default: main
         type: string
+      deploy:
+        description: Deploy the image to noco-bot once it is built; only a build of `main` is ever deployed.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
-
-concurrency:
-  group: bot-image-${{ inputs.ref }}
-  cancel-in-progress: true
 
 jobs:
   image:
     name: Build the linux/amd64 image
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A newer build of the same ref replaces this one; the deployment has its own group and is never cancelled.
+    concurrency:
+      group: bot-image-${{ inputs.ref }}
+      cancel-in-progress: true
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
       # A read-only token for nocobase/nocobase-bot alone, revoked as soon as the source is checked out.
       - name: Create a read-only source token
@@ -127,3 +140,30 @@ jobs:
             echo "- \`nocobase/nocobase-bot:sha-${SHA}\`"
             if [ "$REF" = main ]; then echo '- `nocobase/nocobase-bot:main`'; fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to noco-bot
+    needs: image
+    if: ${{ inputs.ref == 'main' && inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A deployment in progress is never cancelled; the one waiting behind it is replaced by a newer one.
+    concurrency:
+      group: bot-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Deploy
+        uses: ./.github/nocobase3/ssh-deploy
+        with:
+          name: nocobase-bot
+          tag: sha-${{ needs.image.outputs.sha }}
+          ssh-key: ${{ secrets.BOT_DEPLOY_SSH_KEY }}
+          deploy-host: ${{ vars.BOT_DEPLOY_HOST }}
+          known-hosts: ${{ vars.BOT_DEPLOY_KNOWN_HOSTS }}
+          secret-names: BOT_DEPLOY_SSH_KEY, BOT_DEPLOY_HOST or BOT_DEPLOY_KNOWN_HOSTS
