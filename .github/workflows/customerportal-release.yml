@@ -1,9 +1,11 @@
 name: CustomerPortal release
-run-name: customerportal-release${{ inputs.dry_run && ' (dry run)' || '' }}
+run-name: customerportal-release:${{ inputs.request_id || 'manual' }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 # Releases the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com) by hand, as Studio is released (`v3-studio-release.yml` in nocobase/nocobase): nothing deploys a push to `main` any more, so production moves only when someone runs
 #
 #   gh workflow run customerportal-release.yml -R 2013xile/nocobase-ci
+#
+# or runs CustomerPortal's own `Release` workflow (.github/workflows/release.yml there), which dispatches this one with `request_id` (its own run, so it can find and link this run by its name) and `requested_by` (who started it, named in the Feishu card instead of the token's owner).
 #
 # - The released version is the `version` of CustomerPortal's package.json on `main`, as it is. `main` is resolved to one commit before anything else, so the build, the tag and the notes name the same commit even if `main` moves during the run. The run stops before anything is built when CustomerPortal already has the tag `v<version>` or the bump branch `release/customerportal-<next>`, left by an earlier release.
 # - The build and the deployment are the composite action customerportal-deploy, shared with customerportal-deploy.yml (the manual redeploy, kept for urgent fixes and rollbacks): the image is still `nocobase/customer-portal:prod-<short sha>`, the only tag the server's deploy script accepts, and its job is in the same concurrency group, so a release and a redeploy never deploy at the same time.
@@ -21,6 +23,16 @@ on:
         description: 'Dry run: resolve, validate and build without deploying, tagging or bumping anything'
         type: boolean
         default: false
+      request_id:
+        description: Set by CustomerPortal's Release workflow, which finds this run by it in the run name.
+        required: false
+        default: ''
+        type: string
+      requested_by:
+        description: Set by CustomerPortal's Release workflow to the person who started the release.
+        required: false
+        default: ''
+        type: string
 
 # One release at a time: the checks in prepare are only valid while no other run can tag a version.
 concurrency:
@@ -460,7 +472,7 @@ jobs:
       - name: Send the card
         env:
           WEBHOOK_URL: ${{ secrets.RELEASE_RESULT_FEISHU_WEBHOOK_URL }}
-          ACTOR: ${{ github.actor }}
+          ACTOR: ${{ inputs.requested_by || github.actor }}
           REPOSITORY: nocobase/CustomerPortal
           WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PREPARE: ${{ needs.prepare.result }}
