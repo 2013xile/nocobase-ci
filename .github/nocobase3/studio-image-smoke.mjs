@@ -17,7 +17,7 @@ try {
   await chmod(directory, 0o755);
   await writeFile(path.join(directory, 'config.yml'), JSON.stringify({
     secrets: { keys: [{ version: 1, key: randomBytes(32).toString('hex') }] },
-    users: { initialAdmin: { username: 'image-smoke', email, password } },
+    users: { initialAdmin: { username: 'image_smoke', email, password } },
     app: { sampleData: false, publicOrigin: 'http://localhost' },
     agents: { enabled: false },
     releases: { host: { enabled: false }, docker: { enabled: false } },
