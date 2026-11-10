@@ -7,14 +7,13 @@ run-name: customerportal-ci:${{ inputs.request_id }}
 #
 # - pull requests: `Preview` and `Test`. The bot forwards every pull request from a branch of the repository itself,
 #   whatever its target, never a fork's: the preview runs the pull request's code next to the Studio key.
-# - pushes to `main`: `Deploy`, which builds the pushed commit into an image and deploys it to the production environment (https://customer.nocobase.com).
-#   The bot forwards no other branch and no push whose head commit says `[skip ci]`.
+# - pushes: nothing. Production is released by hand with customerportal-release.yml, and redeployed with customerportal-deploy.yml.
 #
 # CustomerPortal is a NocoBase 3 application at the repository root. `Preview` deploys the pull request's head to its
 # own App `customerportal-pr-<n>` in Studio's `preview` environment, as the workflow Studio generated in the repository
 # did (`nb-studio-customerportal-preview.yml`), which this replaces.
 #
-# This repository is public: nothing uploads CustomerPortal's source or its application build, and nothing is cached.
+# This repository is public: nothing uploads CustomerPortal's source or its server build, and nothing is cached.
 
 on:
   workflow_dispatch:
@@ -285,52 +284,3 @@ jobs:
             echo "One or more test shards concluded with $RESULT."
             exit 1
           fi
-
-  # Builds exactly `head_sha`, the commit the check is on, never the branch as it is now, so a newer push cannot make this
-  # check deploy code it is not about. The job's concurrency group is shared with customerportal-deploy.yml (the manual
-  # redeploy) and never cancels: a deployment in progress is left to finish, and a deployment waiting behind it is
-  # replaced by a newer one, so the server only ever goes forward and a replaced run's check ends cancelled. The whole
-  # build and deploy is one job so that its conclusion is the check's: a failed build fails `Deploy` instead of leaving
-  # it skipped. nocobase-bot does not cancel a push's run when a newer push arrives (`keepsPushRuns`), since that would
-  # stop a deployment midway. The steps are the composite action customerportal-deploy, shared with the manual redeploy.
-  deploy:
-    name: Deploy
-    if: ${{ inputs.event_name == 'push' && inputs.target_branch == 'main' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    concurrency:
-      group: customerportal-deploy
-      cancel-in-progress: false
-    steps:
-      - name: Check out trusted CI helpers
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/nocobase3
-
-      - name: Check out fixed source snapshot
-        uses: ./.github/nocobase3/checkout
-        with:
-          repository: CustomerPortal
-          path: customerportal
-          app-id: ${{ vars.NOCOBASE_APP_ID }}
-          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
-          request-id: ${{ inputs.request_id }}
-          event-name: ${{ inputs.event_name }}
-          head-sha: ${{ inputs.head_sha }}
-          base-sha: ${{ inputs.base_sha }}
-          target-branch: ${{ inputs.target_branch }}
-          pr-number: ${{ inputs.pr_number }}
-          skip-label: ${{ inputs.skip_label }}
-          merge-pull-request: 'false'
-
-      - name: Build and deploy
-        uses: ./.github/nocobase3/customerportal-deploy
-        with:
-          sha: ${{ inputs.head_sha }}
-          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
-          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
-          ssh-key: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
-          deploy-host: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
-          known-hosts: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}

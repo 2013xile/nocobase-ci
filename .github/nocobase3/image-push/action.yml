@@ -1,0 +1,111 @@
+name: Build and push an image tagged by its commit
+description: Builds the checked-out source into a linux/amd64 image and pushes it to the internal registry as `<image>:sha-<short sha>`, and also as a moving tag such as `<image>:main` when one is named.
+
+# Shared by the forwarded CI (bot-ci.yml, pro-registry-ci.yml, verdaccio-ci.yml) and the manual builds (bot-image.yml, pro-registry-image.yml, verdaccio-image.yml) of nocobase-bot, pkg-v3 and pkg / pkg-src, so that both build in exactly the same way. The caller has checked the source out into `path` and holds the secrets. Only `sha-` tags are deployed; the moving tag (`main`, or `alpha` for verdaccio) is kept for manual pulls.
+#
+# `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default (manifest type application/vnd.oci.empty.v1+json) and the registry rejects them with "unknown manifest class".
+
+inputs:
+  path:
+    description: The directory the source was checked out into, holding its Dockerfile.
+    required: true
+  image:
+    description: The repository in the registry, such as nocobase/nocobase-bot.
+    required: true
+  sha:
+    description: The 40-character commit that was checked out; its first seven characters name the tag.
+    required: true
+  moving-tag:
+    description: A moving tag to push as well, such as `main`; none when empty.
+    default: ''
+  build-args:
+    description: Build arguments, one per line.
+    default: ''
+  registry:
+    description: The internal registry host.
+    required: true
+  registry-username:
+    description: The registry user.
+    required: true
+  registry-password:
+    description: The registry password.
+    required: true
+
+outputs:
+  tag:
+    description: The pushed `sha-<short sha>` tag.
+    value: sha-${{ steps.tag.outputs.short }}
+
+runs:
+  using: composite
+  steps:
+    - name: Name the image tag
+      id: tag
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        IMAGE: ${{ inputs.image }}
+        MOVING_TAG: ${{ inputs.moving-tag }}
+      run: |
+        if ! printf %s "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+          echo "Refusing a malformed commit: $SHA" >&2
+          exit 1
+        fi
+        if ! printf %s "$IMAGE" | grep -Eq '^nocobase/[a-z0-9-]+$'; then
+          echo "Refusing a malformed image name: $IMAGE" >&2
+          exit 1
+        fi
+        if [ -n "$MOVING_TAG" ] && ! printf %s "$MOVING_TAG" | grep -Eq '^[a-z]+$'; then
+          echo "Refusing a malformed moving tag: $MOVING_TAG" >&2
+          exit 1
+        fi
+        echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+    - name: Sign in to the registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.registry-username }}
+        password: ${{ inputs.registry-password }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # The second line is empty unless a moving tag is named, and an empty line in `tags` is ignored.
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.path }}
+        file: ${{ inputs.path }}/Dockerfile
+        build-args: ${{ inputs.build-args }}
+        platforms: linux/amd64
+        provenance: false
+        sbom: false
+        push: true
+        tags: |
+          ${{ inputs.registry }}/${{ inputs.image }}:sha-${{ steps.tag.outputs.short }}
+          ${{ inputs.moving-tag != '' && format('{0}/{1}:{2}', inputs.registry, inputs.image, inputs.moving-tag) || '' }}
+
+    - name: Inspect the pushed image
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        IMAGE: ${{ inputs.image }}
+        SHORT: ${{ steps.tag.outputs.short }}
+      run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE}:sha-${SHORT}"
+
+    - name: Summary
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        SHORT: ${{ steps.tag.outputs.short }}
+        MOVING_TAG: ${{ inputs.moving-tag }}
+      run: |
+        {
+          echo "### ${IMAGE}"
+          echo
+          echo "Built \`${SHORT}\` for linux/amd64."
+          echo
+          echo "- \`${IMAGE}:sha-${SHORT}\`"
+          if [ -n "$MOVING_TAG" ]; then echo "- \`${IMAGE}:${MOVING_TAG}\`"; fi
+        } >> "$GITHUB_STEP_SUMMARY"

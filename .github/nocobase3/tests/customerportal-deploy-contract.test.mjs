@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (file) => readFileSync(path.join(root, file), 'utf8');
 const workflow = read('.github/workflows/customerportal-deploy.yml');
 const action = read('.github/nocobase3/customerportal-deploy/action.yml');
-const forwarded = read('.github/workflows/customerportal-ci.yml');
+const release = read('.github/workflows/customerportal-release.yml');
 
 test('the manual redeploy takes the ref to deploy, runs by dispatch only, and is named after it', () => {
   assert.match(workflow, /^run-name: customerportal-deploy:\$\{\{ inputs\.ref \}\}$/mu);
@@ -18,10 +18,10 @@ test('the manual redeploy takes the ref to deploy, runs by dispatch only, and is
   assert.doesNotMatch(workflow, /^concurrency:/mu);
 });
 
-test('the manual redeploy and the forwarded Deploy share one group that never cancels a deployment', () => {
+test('the manual redeploy and the release share one group that never cancels a deployment', () => {
   const group = /concurrency:\n      group: customerportal-deploy\n      cancel-in-progress: false\n/u;
   assert.match(workflow, group);
-  assert.match(forwarded, group);
+  assert.match(release, group);
   assert.doesNotMatch(workflow, /cancel-in-progress: true/u);
 });
 
@@ -35,7 +35,7 @@ test('the manual redeploy checks out the private nocobase/CustomerPortal at the 
 });
 
 test('builds dist with a larger heap, then packages it as a linux/amd64 image without attestations', () => {
-  assert.match(action, /NODE_OPTIONS: --max-old-space-size=6144\n      run: pnpm build --target linux-x64\n/u);
+  assert.match(action, /NODE_OPTIONS: --max-old-space-size=6144\n(?:        .+\n)*      run: pnpm build --target linux-x64\n/u);
   assert.match(action, /node-version: 24\n/u);
   assert.ok(action.indexOf('pnpm build --target linux-x64') < action.indexOf('- name: Build and push the image'));
   assert.match(action, /build-args: DIST=prebuilt\n        platforms: linux\/amd64\n        provenance: false\n        sbom: false\n/u);
@@ -56,13 +56,13 @@ test('deploys the tag alone over a restricted SSH key with repository-level secr
 });
 
 test('both callers hand the action the secrets and variables, and nothing is cached or uploaded', () => {
-  for (const caller of [workflow, forwarded]) {
+  for (const caller of [workflow, release]) {
     assert.match(caller, /ssh-key: \$\{\{ secrets\.CUSTOMERPORTAL_DEPLOY_SSH_KEY \}\}/u);
     assert.match(caller, /deploy-host: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_HOST \}\}/u);
     assert.match(caller, /known-hosts: \$\{\{ vars\.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS \}\}/u);
     assert.match(caller, /registry: \$\{\{ secrets\.ALI_DOCKER_REGISTRY \}\}/u);
   }
-  for (const source of [workflow, action]) {
+  for (const source of [workflow, release, action]) {
     assert.doesNotMatch(source, /actions\/cache|^\s+cache:|actions\/upload-artifact/mu);
   }
 });

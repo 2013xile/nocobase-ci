@@ -1,13 +1,15 @@
 name: CustomerPortal deploy
 run-name: customerportal-deploy:${{ inputs.ref }}
 
-# A manual redeploy of the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com), for a branch at its current head: run it by hand with
+# A manual redeploy of the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com), for a branch at its current head, kept for urgent fixes and rollbacks: production is normally released with customerportal-release.yml, which also tags the version and bumps it. Run it by hand with
 #
 #   gh workflow run customerportal-deploy.yml -R 2013xile/nocobase-ci -f ref=main
 #
-# Nothing dispatches it. The deployment of every push to `main` is the `Deploy` job of customerportal-ci.yml, which nocobase-bot forwards as a check on the pushed commit; this workflow builds and deploys in exactly the same way (the composite action customerportal-deploy) and shares its concurrency group, so a manual redeploy and a forwarded one never run at the same time. It creates no check.
+# With `-f deploy=false` it builds and uploads the client assets to the CDN only, pushing no image and deploying nothing, which tries out a change to the CDN upload without touching production.
 #
-# This repository is public: nothing uploads CustomerPortal's source or build, and nothing is cached.
+# Nothing dispatches it, and it tags nothing, bumps nothing and creates no check. It builds and deploys exactly as the release does (the composite action customerportal-deploy) and shares its concurrency group, so a redeploy and a release never deploy at the same time. Redeploying the commit production already runs changes nothing: the server's deploy script skips a tag it is already running.
+#
+# This repository is public: nothing uploads CustomerPortal's source or server build, and nothing is cached. The client assets go to the CDN, where the deployed page loads them from anyway.
 
 on:
   workflow_dispatch:
@@ -17,6 +19,11 @@ on:
         required: true
         default: main
         type: string
+      deploy:
+        description: Push the image and deploy it. Off, the run only builds and uploads the client assets to the CDN, to try them out.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -91,3 +98,8 @@ jobs:
           ssh-key: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
           deploy-host: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
           known-hosts: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}
+          cdn-oss-access-key-id: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_ID }}
+          cdn-oss-access-key-secret: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}
+          cdn-oss-bucket: ${{ secrets.CDN_ALI_OSS_BUCKET }}
+          cdn-oss-region: ${{ secrets.CDN_ALI_OSS_REGION }}
+          deploy: ${{ inputs.deploy }}

@@ -1,7 +1,9 @@
 name: Build and deploy CustomerPortal
-description: Builds the checked-out nocobase/CustomerPortal into a linux/amd64 image, pushes it to the internal registry as nocobase/customer-portal:prod-<short sha>, and deploys that tag to the production environment (https://customer.nocobase.com) over SSH.
+description: Builds the checked-out nocobase/CustomerPortal into a linux/amd64 image whose client loads its assets from the CDN, uploads those assets to the CDN's bucket, pushes the image to the internal registry as nocobase/customer-portal:prod-<short sha>, and deploys that tag to the production environment (https://customer.nocobase.com) over SSH.
 
-# Shared by customerportal-ci.yml (the forwarded `Deploy` check of every push to main) and customerportal-deploy.yml (a manual redeploy), so that both build and deploy in exactly the same way. The caller has checked the source out into `path` and holds the secrets; nothing here uploads the source or the build, and nothing is cached.
+# Shared by customerportal-release.yml (a release) and customerportal-deploy.yml (a manual redeploy), so that both build and deploy in exactly the same way. The caller has checked the source out into `path` and holds the secrets; nothing here uploads the source or the server build, and nothing is cached.
+#
+# The client is served from the CDN, as NocoBase 2's images are (`client:upload` in build-pro-image.yml): `CDN_BASE_URL` is a build parameter of CustomerPortal, Vite's `base`, so the build names `<cdn-origin>/customer-portal/<YYYYMMDDHHmmss>/<short sha>/` and `dist/client/` is uploaded to `customer-portal/<YYYYMMDDHHmmss>/<short sha>/` in the bucket behind it, the bucket `client:upload` writes NocoBase 2's `<version>/` directories to. Those are the browser's own files, public once deployed anyway; source maps stay out. Every build has its own directory, so a page still open on the previous release and the server's rollback to the previous tag keep finding their assets, and the files never change, so they are cached for a year. The upload finishes, and one asset from `index.html` is fetched through the CDN, before the image is pushed: a deployed page never names a file the CDN does not have. `index.html` and the whole client tree stay in the image, which still injects the runtime configuration into the HTML.
 #
 # The build runs `pnpm build --target linux-x64` on the runner, with a larger heap than vite's default (which runs out of memory), and then `docker build --build-arg DIST=prebuilt` packages that `dist/`, as CustomerPortal's `.agents/rules/build-and-deploy.md` describes. `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class").
 #
@@ -32,6 +34,24 @@ inputs:
   known-hosts:
     description: The server's host key, one known_hosts line.
     required: true
+  cdn-origin:
+    description: The CDN in front of the bucket, without a trailing slash.
+    default: https://cdn.nocobase.com
+  cdn-oss-access-key-id:
+    description: The AccessKey ID that may write to the CDN's bucket.
+    required: true
+  cdn-oss-access-key-secret:
+    description: Its secret.
+    required: true
+  cdn-oss-bucket:
+    description: The bucket behind the CDN.
+    required: true
+  cdn-oss-region:
+    description: The bucket's region, with or without the `oss-` prefix (cn-hangzhou or oss-cn-hangzhou).
+    required: true
+  deploy:
+    description: false builds and uploads the client assets only, without pushing an image or deploying, to try the CDN out.
+    default: 'true'
 
 runs:
   using: composite
@@ -41,12 +61,22 @@ runs:
       shell: bash
       env:
         SHA: ${{ inputs.sha }}
+        CDN_ORIGIN: ${{ inputs.cdn-origin }}
       run: |
         if ! printf %s "$SHA" | grep -Eq '^[0-9a-f]{40}$'; then
           echo "Refusing a malformed commit: $SHA" >&2
           exit 1
         fi
-        echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+        if ! printf %s "$CDN_ORIGIN" | grep -Eq '^https://[A-Za-z0-9.-]+$'; then
+          echo "Refusing a CDN origin that is not https://<host>: $CDN_ORIGIN" >&2
+          exit 1
+        fi
+        short=${SHA:0:7}
+        # A directory per build, named by when it was built (Beijing time, as the docs uploads are) and what it built, so that listing the bucket orders the releases and old ones can be removed by date.
+        prefix="customer-portal/$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)/${short}"
+        echo "short=${short}" >> "$GITHUB_OUTPUT"
+        echo "cdn-prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "cdn-base-url=${CDN_ORIGIN}/${prefix}/" >> "$GITHUB_OUTPUT"
 
     # The pnpm version is the repository's own `packageManager`.
     - name: Set up pnpm
@@ -65,15 +95,63 @@ runs:
       working-directory: ${{ inputs.path }}
       run: pnpm install --frozen-lockfile
 
-    # Leaves <path>/dist, which the Dockerfile packages with DIST=prebuilt.
+    # Leaves <path>/dist, which the Dockerfile packages with DIST=prebuilt. Its client names the CDN directory below.
     - name: Build the application
       shell: bash
       working-directory: ${{ inputs.path }}
       env:
         NODE_OPTIONS: --max-old-space-size=6144
+        CDN_BASE_URL: ${{ steps.tag.outputs.cdn-base-url }}
       run: pnpm build --target linux-x64
 
+    - name: Upload the client assets to the CDN
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        OSS_ACCESS_KEY_ID: ${{ inputs.cdn-oss-access-key-id }}
+        OSS_ACCESS_KEY_SECRET: ${{ inputs.cdn-oss-access-key-secret }}
+        BUCKET: ${{ inputs.cdn-oss-bucket }}
+        REGION: ${{ inputs.cdn-oss-region }}
+        PREFIX: ${{ steps.tag.outputs.cdn-prefix }}
+        CDN_BASE_URL: ${{ steps.tag.outputs.cdn-base-url }}
+      run: |
+        set -euo pipefail
+        if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ] || [ -z "$BUCKET" ] || [ -z "$REGION" ]; then
+          echo 'CDN_ALI_OSS_ACCESS_KEY_ID, CDN_ALI_OSS_ACCESS_KEY_SECRET, CDN_ALI_OSS_BUCKET or CDN_ALI_OSS_REGION is missing from the repository secrets.' >&2
+          exit 1
+        fi
+        # The secrets are shared with `client:upload`, whose ali-oss client takes the region as oss-<region>; ossutil takes <region>.
+        REGION=${REGION#oss-}
+        # The build wrote the CDN address into the HTML; a client still addressed relatively would upload files nothing loads.
+        if ! grep -qF "$CDN_BASE_URL" dist/client/index.html; then
+          echo "dist/client/index.html does not name ${CDN_BASE_URL}; the build ignored CDN_BASE_URL." >&2
+          exit 1
+        fi
+        curl -fsS -o "$RUNNER_TEMP/ossutil.zip" https://gosspublic.alicdn.com/ossutil/v2/2.2.2/ossutil-2.2.2-linux-amd64.zip
+        unzip -o -q "$RUNNER_TEMP/ossutil.zip" -d "$RUNNER_TEMP/ossutil"
+        ossutil="$RUNNER_TEMP/ossutil/ossutil-2.2.2-linux-amd64/ossutil"
+        chmod 755 "$ossutil"
+        "$ossutil" cp -r dist/client/ "oss://${BUCKET}/${PREFIX}/" -f -j 32 \
+          --region "$REGION" \
+          --exclude '*.map' \
+          --cache-control 'public, max-age=31536000, immutable'
+        # Fetches one asset the HTML loads through the CDN, which proves the bucket is the one the CDN serves.
+        asset=$(grep -oE "${CDN_BASE_URL}[^\"']+\.js" dist/client/index.html | head -n 1 || true)
+        if [ -z "$asset" ]; then
+          echo 'dist/client/index.html loads no script from the CDN.' >&2
+          exit 1
+        fi
+        status=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: https://customer.nocobase.com' --retry 3 --retry-all-errors "$asset")
+        if [ "$status" != 200 ]; then
+          echo "The CDN answers ${status} for ${asset}." >&2
+          exit 1
+        fi
+        echo "### CustomerPortal client assets" >> "$GITHUB_STEP_SUMMARY"
+        echo >> "$GITHUB_STEP_SUMMARY"
+        echo "Uploaded to \`oss://<bucket>/${PREFIX}/\`, served at ${CDN_BASE_URL}" >> "$GITHUB_STEP_SUMMARY"
+
     - name: Sign in to the registry
+      if: ${{ inputs.deploy == 'true' }}
       uses: docker/login-action@v3
       with:
         registry: ${{ inputs.registry }}
@@ -81,9 +159,11 @@ runs:
         password: ${{ inputs.registry-password }}
 
     - name: Set up Docker Buildx
+      if: ${{ inputs.deploy == 'true' }}
       uses: docker/setup-buildx-action@v3
 
     - name: Build and push the image
+      if: ${{ inputs.deploy == 'true' }}
       uses: docker/build-push-action@v6
       with:
         context: ${{ inputs.path }}
@@ -96,6 +176,7 @@ runs:
         tags: ${{ inputs.registry }}/nocobase/customer-portal:prod-${{ steps.tag.outputs.short }}
 
     - name: Inspect the pushed image
+      if: ${{ inputs.deploy == 'true' }}
       shell: bash
       env:
         REGISTRY: ${{ inputs.registry }}
@@ -103,6 +184,7 @@ runs:
       run: docker buildx imagetools inspect "${REGISTRY}/nocobase/customer-portal:prod-${SHORT}"
 
     - name: Deploy over SSH
+      if: ${{ inputs.deploy == 'true' }}
       shell: bash
       env:
         SSH_KEY: ${{ inputs.ssh-key }}
