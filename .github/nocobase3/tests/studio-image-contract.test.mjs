@@ -62,15 +62,15 @@ function nameTags({ ref = 'dev' } = {}) {
 }
 
 test('packs the served CLI and runner under RUNNER_TEMP, on the workspace disk', () => {
-  assert.match(job('image'), /- name: Build EE dist\n        id: build_dist\n        env:\n          TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
+  assert.match(job('image'), /- name: Build edition dist\n        id: build_dist\n        env:\n          TMPDIR: \$\{\{ runner\.temp \}\}\n/u);
 });
 
 test('takes the ref to build, and no release mode', () => {
   const inputs = workflow.slice(workflow.indexOf('  workflow_dispatch:\n'), workflow.indexOf('\npermissions:\n'));
   assert.match(inputs, /      ref:\n(?:        .+\n)*?        required: true\n(?:        .+\n)*?        type: string\n/u);
   assert.doesNotMatch(workflow, /inputs\.release|      release:/u);
-  assert.match(workflow, /^run-name: studio-image:\$\{\{ inputs\.ref \}\}$/mu);
-  assert.match(workflow, /group: studio-image-\$\{\{ inputs\.ref \}\}\n/u);
+  assert.match(workflow, /^run-name: studio-image:/mu);
+  assert.match(workflow, /group: studio-image-.*inputs\.edition.*inputs\.dry_run/u);
 });
 
 test('tags a build of dev dev-<short sha> and dev', () => {
@@ -128,7 +128,7 @@ test('checks out the private nocobase/studio at the ref, with its submodule, thr
   assert.match(checkout, /submodules: true\n/u);
   // Revoked before any of Studio's own code runs.
   assert.ok(
-    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Build EE dist', { in: image })),
+    image.indexOf(step('Revoke the source token', { in: image })) < image.indexOf(step('Build edition dist', { in: image })),
   );
   const code = workflow.split('\n').filter((line) => !/^\s*#/u.test(line)).join('\n');
   assert.doesNotMatch(code, /nocobase\/nocobase\b(?!-ci)|packages\/apps\/studio|packages\/tools\/studio-cli/u);
@@ -143,8 +143,8 @@ test('builds at the repository root with the pnpm of its packageManager', () => 
 test("lets Studio's own build pack the universal packages into the prebuilt dist", () => {
   // `pnpm build` packs nb-studio and the runner into dist/runners; nothing builds or copies them separately.
   assert.doesNotMatch(workflow, /cli build|runners-dist/u);
-  assert.match(step('Build EE dist'), /pnpm build:image --edition studio-ee --target "\$TARGET"/u);
-  assert.match(step('Build and push'), /build-args: \|\n            DIST=prebuilt\n            EDITION=studio-ee\n            SOURCE_REVISION=/u);
+  assert.match(step('Build edition dist'), /pnpm build:image --edition "\$EDITION" --target "\$TARGET"/u);
+  assert.match(step('Build and push'), /build-args: \|\n            DIST=prebuilt\n            EDITION=\$\{\{ inputs\.edition \|\| 'studio-ee' \}\}\n            SOURCE_REVISION=/u);
 });
 
 test('builds linux/amd64 and linux/arm64 in parallel, each from a dist/ built for its own platform', () => {
@@ -161,8 +161,9 @@ test('builds linux/amd64 and linux/arm64 in parallel, each from a dist/ built fo
 
 test('pushes each platform by digest and tags them under one multi-platform manifest', () => {
   const push = step('Build and push');
-  assert.doesNotMatch(push, /if:|tags:|push: true/u);
-  assert.match(push, /outputs: type=image,name=\$\{\{ secrets\.ALI_DOCKER_REGISTRY \}\}\/nocobase\/studio-ee,push-by-digest=true,name-canonical=true,push=true\n/u);
+  assert.doesNotMatch(push, /push: true/u);
+  assert.match(push, /inputs\.dry_run && 'type=docker'/u);
+  assert.match(push, /type=image,name=\{0\}\/nocobase\/studio-ee,push-by-digest=true,name-canonical=true,push=true/u);
   assert.match(step('Upload the digest'), /name: digest-\$\{\{ matrix\.arch \}\}\n/u);
   const manifest = job('manifest');
   assert.match(manifest, /    needs: \[prepare, image\]\n/u);
@@ -179,7 +180,7 @@ test('lists the tags in the summary', () => {
 });
 
 test('delegates stamping to the isolated edition build using one immutable source and timestamp', () => {
-  const build = step('Build EE dist');
+  const build = step('Build edition dist');
   assert.match(build, /COMMIT: \$\{\{ needs\.prepare\.outputs\.commit \}\}/u);
   assert.match(build, /STAMP: \$\{\{ needs\.prepare\.outputs\.stamp \}\}/u);
   assert.match(build, /--source-ref "\$COMMIT" --dev-stamp "\$STAMP" --out "\$RUNNER_TEMP\/studio-image"/u);
@@ -189,11 +190,22 @@ test('delegates stamping to the isolated edition build using one immutable sourc
 });
 
 test('requires QA from the Studio checkout, with no separate source pin or build-time installer', () => {
-  const guard = step('Require the in-repository testing package');
+  const guard = step('Require the in-repository Quality package');
   assert.doesNotMatch(guard, /if:|continue-on-error/u);
-  assert.match(guard, /packages\/app-plugin-testing\/package\.json/u);
+  assert.match(guard, /packages\/app-plugin-quality\/package\.json/u);
   assert.match(guard, /testing\.private !== true/u);
   assert.ok(workflow.indexOf(guard) > workflow.indexOf(step('Revoke the source token', { in: job('image') })));
-  assert.ok(workflow.indexOf(guard) < workflow.indexOf(step('Build EE dist')));
+  assert.ok(workflow.indexOf(guard) < workflow.indexOf(step('Build edition dist')));
   assert.doesNotMatch(workflow, /qa_plugin_sha|studio-qa-checkout|qa-source|assembly: image|--no-frozen-lockfile/u);
+});
+
+
+test('ordinary images can only run validation and validation never publishes', () => {
+  for (const [edition, dry, status] of [['studio-ee', 'false', 0], ['studio', 'true', 0], ['studio', 'false', 1], ['other', 'true', 1]]) {
+    const result = spawnSync('bash', ['-e', '-c', script('Validate edition')], { env: { ...process.env, EDITION: edition, DRY_RUN: dry } });
+    assert.equal(result.status, status);
+  }
+  assert.match(job('manifest'), /if: \$\{\{ !inputs\.dry_run \}\}/u);
+  assert.match(step('Export the digest'), /if: \$\{\{ !inputs\.dry_run \}\}/u);
+  assert.match(step('Smoke-test the image'), /if: \$\{\{ inputs\.dry_run \}\}/u);
 });

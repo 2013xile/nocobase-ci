@@ -1,5 +1,5 @@
 name: Studio image
-run-name: studio-image:${{ inputs.ref }}
+run-name: studio-image:${{ inputs.ref }}:${{ inputs.edition || 'studio-ee' }}${{ inputs.dry_run && ' (validation)' || '' }}
 
 # Builds NocoBase Studio EE's internal image from the private nocobase/studio repository, from any branch, tag or commit,
 # and pushes it to the internal registry as one image for linux/amd64 and linux/arm64: each platform builds its own
@@ -33,12 +33,21 @@ on:
         required: true
         default: dev
         type: string
+      dry_run:
+        description: Build and smoke-test without publishing any image
+        type: boolean
+        default: false
+      edition:
+        description: Image to validate; publishing is restricted to studio-ee
+        type: choice
+        options: [studio-ee, studio]
+        default: studio-ee
 
 permissions:
   contents: read
 
 concurrency:
-  group: studio-image-${{ inputs.ref }}
+  group: studio-image-${{ inputs.ref }}-${{ inputs.edition || 'studio-ee' }}-${{ inputs.dry_run }}
   cancel-in-progress: true
 
 jobs:
@@ -54,6 +63,16 @@ jobs:
       tags: ${{ steps.tags.outputs.tags }}
       stamp: ${{ steps.tags.outputs.stamp }}
     steps:
+      - name: Validate edition
+        env:
+          EDITION: ${{ inputs.edition || 'studio-ee' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          case "$EDITION" in
+            studio-ee) ;;
+            studio) test "$DRY_RUN" = true || { echo 'Ordinary images are validation-only here.' >&2; exit 1; } ;;
+            *) exit 1 ;;
+          esac
       # A read-only token for nocobase/studio alone, revoked as soon as the ref is resolved.
       - name: Create a read-only source token
         id: app-token
@@ -165,16 +184,16 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
 
-      - name: Require the in-repository testing package
+      - name: Require the in-repository Quality package
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
           const app = JSON.parse(readFileSync('package.json', 'utf8'));
-          const testing = JSON.parse(readFileSync('packages/app-plugin-testing/package.json', 'utf8'));
-          if (app.dependencies?.['@nocobase/app-plugin-testing'] !== 'workspace:*' ||
-              testing.name !== '@nocobase/app-plugin-testing' || testing.private !== true ||
+          const testing = JSON.parse(readFileSync('packages/app-plugin-quality/package.json', 'utf8'));
+          if (app.dependencies?.['@nocobase/app-plugin-quality'] !== 'workspace:*' ||
+              testing.name !== '@nocobase/app-plugin-quality' || testing.private !== true ||
               !app.scripts?.['build:image']) {
-            throw new Error('Studio EE images require the edition build entry and the private in-repository testing package.');
+            throw new Error('Studio EE images require the edition build entry and the private in-repository Quality package.');
           }
           NODE
 
@@ -193,19 +212,21 @@ jobs:
       # build:image installs the frozen graph in an isolated checkout, stamps all served packages there,
       # selects EE and checks the final artifact. The outer checkout stays at the resolved source revision.
       # Keep temporary packages on the runner's workspace disk to avoid cross-device renames.
-      - name: Build EE dist
+      - name: Build edition dist
         id: build_dist
         env:
           TMPDIR: ${{ runner.temp }}
           COMMIT: ${{ needs.prepare.outputs.commit }}
           STAMP: ${{ needs.prepare.outputs.stamp }}
           TARGET: ${{ matrix.target }}
+          EDITION: ${{ inputs.edition || 'studio-ee' }}
         run: |
-          pnpm build:image --edition studio-ee --target "$TARGET" \
+          pnpm build:image --edition "$EDITION" --target "$TARGET" \
             --source-ref "$COMMIT" --dev-stamp "$STAMP" --out "$RUNNER_TEMP/studio-image"
           echo "version=$(jq -r '.version' "$RUNNER_TEMP/studio-image/build-metadata.json")" >> "$GITHUB_OUTPUT"
 
       - name: Sign in to the registry
+        if: ${{ !inputs.dry_run }}
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
@@ -231,12 +252,31 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           build-args: |
             DIST=prebuilt
-            EDITION=studio-ee
+            EDITION=${{ inputs.edition || 'studio-ee' }}
             SOURCE_REVISION=${{ needs.prepare.outputs.commit }}
-          outputs: type=image,name=${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/studio-ee,push-by-digest=true,name-canonical=true,push=true
+          tags: ${{ inputs.dry_run && format('studio-validation:{0}-{1}', inputs.edition, matrix.arch) || '' }}
+          outputs: ${{ inputs.dry_run && 'type=docker' || format('type=image,name={0}/nocobase/studio-ee,push-by-digest=true,name-canonical=true,push=true', secrets.ALI_DOCKER_REGISTRY) }}
           provenance: false
 
+      - name: Check out smoke tooling
+        if: ${{ inputs.dry_run }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: ci-tools
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Smoke-test the image
+        if: ${{ inputs.dry_run }}
+        env:
+          IMAGE: studio-validation:${{ inputs.edition }}-${{ matrix.arch }}
+          EDITION: ${{ inputs.edition }}
+        run: node ci-tools/.github/nocobase3/studio-image-smoke.mjs "$IMAGE" "$EDITION"
+
       - name: Export the digest
+        if: ${{ !inputs.dry_run }}
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -244,6 +284,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
 
       - name: Upload the digest
+        if: ${{ !inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.arch }}
@@ -252,6 +293,7 @@ jobs:
           retention-days: 1
 
   manifest:
+    if: ${{ !inputs.dry_run }}
     name: Tag the multi-platform image
     needs: [prepare, image]
     runs-on: ubuntu-latest
@@ -265,6 +307,7 @@ jobs:
           merge-multiple: true
 
       - name: Sign in to the registry
+        if: ${{ !inputs.dry_run }}
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
