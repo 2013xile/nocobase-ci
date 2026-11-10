@@ -482,7 +482,7 @@ jobs:
           fi
           nl=$'\n'
           # The Feishu bot only accepts messages containing its keyword, NocoBase, as Studio's titles do.
-          export TITLE='NocoBase 客户中心发版'
+          export TITLE='NocoBase Customer Portal 发版'
           if [ "$RELEASE" = "success" ]; then
             export STATUS=success STATUS_TEXT_SUCCESS='发布成功'
             content="版本 **${VERSION}**（\`${COMMIT:0:7}\`）已部署到 https://customer.nocobase.com ，git tag \`v${VERSION}\` 已打，\`main\` 的版本号已改为 \`${NEXT}\`。"
