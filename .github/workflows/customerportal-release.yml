@@ -1,0 +1,501 @@
+name: CustomerPortal release
+run-name: customerportal-release${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Releases the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com) by hand, as Studio is released (`v3-studio-release.yml` in nocobase/nocobase): nothing deploys a push to `main` any more, so production moves only when someone runs
+#
+#   gh workflow run customerportal-release.yml -R 2013xile/nocobase-ci
+#
+# - The released version is the `version` of CustomerPortal's package.json on `main`, as it is. `main` is resolved to one commit before anything else, so the build, the tag and the notes name the same commit even if `main` moves during the run. The run stops before anything is built when CustomerPortal already has the tag `v<version>` or the bump branch `release/customerportal-<next>`, left by an earlier release.
+# - The build and the deployment are the composite action customerportal-deploy, shared with customerportal-deploy.yml (the manual redeploy, kept for urgent fixes and rollbacks): the image is still `nocobase/customer-portal:prod-<short sha>`, the only tag the server's deploy script accepts, and its job is in the same concurrency group, so a release and a redeploy never deploy at the same time.
+# - Once the server has deployed and health-checked the image, the commit is tagged `v<version>`, and the version of package.json is bumped to the next one (1.0.0 -> 1.0.1, 1.0.0-beta.3 -> 1.0.0-beta.4) through a pull request from `release/customerportal-<next>` that is squash merged at once, as CustomerPortal's pull requests are. nocobase-bot forwards no pull request from that branch.
+# - The GitHub release `v<version>` lists the commits since the previous `v*` tag, grouped by their conventional-commit type; the first release, which has no previous tag, says only that it is the first. The notes and the release are best-effort: the deployment and the tag are already out by then, so a failure warns and never fails the run. An existing release (a retried run) is left alone.
+# - A Feishu card reports the result of every real release, success or failure, through RELEASE_RESULT_FEISHU_WEBHOOK_URL.
+# - dry_run resolves and validates the version, builds the image and uploads the client assets to the CDN (as `-f deploy=false` of the manual redeploy does), but pushes no image, deploys nothing, tags nothing, opens no pull request, creates no release and notifies no one.
+#
+# This repository is public: nothing uploads CustomerPortal's source or its server build, and nothing is cached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: resolve, validate and build without deploying, tagging or bumping anything'
+        type: boolean
+        default: false
+
+# One release at a time: the checks in prepare are only valid while no other run can tag a version.
+concurrency:
+  group: customerportal-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.version.outputs.version }}
+      next_version: ${{ steps.version.outputs.next }}
+      bump_branch: ${{ steps.version.outputs.bump_branch }}
+    steps:
+      # A read-only token for nocobase/CustomerPortal alone, revoked as soon as the source is resolved.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: CustomerPortal
+          permission-contents: read
+          skip-token-revoke: true
+
+      # package.json is read at the resolved commit, not at the branch.
+      - name: Resolve the source
+        id: source
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          commit=$(gh api repos/nocobase/CustomerPortal/commits/main --jq .sha)
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/nocobase/CustomerPortal/contents/package.json?ref=${commit}" > "$RUNNER_TEMP/package.json"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "nocobase/CustomerPortal main is at ${commit}"
+
+      # Semver with an optional prerelease part and no build metadata. The next version is computed here too, so a version that cannot be bumped stops the run before anything is deployed: a prerelease adds one to its last identifier, which must be numeric, and a release adds one to its patch.
+      - name: Read and validate the version
+        id: version
+        run: |
+          version=$(jq -r '.version // empty' "$RUNNER_TEMP/package.json")
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! [[ "$version" =~ $semver ]]; then
+            echo "::error::CustomerPortal's package.json has no valid semver version (found '${version}')."
+            exit 1
+          fi
+          if [[ "$version" == *-* ]]; then
+            core=${version%%-*}
+            pre=${version#*-}
+            last=${pre##*.}
+            if ! [[ "$last" =~ ^[0-9]+$ ]]; then
+              echo "::error::Cannot compute the next version of ${version}: its prerelease part does not end in a number."
+              exit 1
+            fi
+            if [[ "$pre" == *.* ]]; then
+              next="${core}-${pre%.*}.$((10#$last + 1))"
+            else
+              next="${core}-$((10#$last + 1))"
+            fi
+          else
+            IFS=. read -r major minor patch <<< "$version"
+            next="${major}.${minor}.$((10#$patch + 1))"
+          fi
+          {
+            echo "version=${version}"
+            echo "next=${next}"
+            echo "bump_branch=release/customerportal-${next}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing ${version}; main moves on to ${next}."
+
+      # matching-refs lists every ref with the prefix (v1.0.1 also matches v1.0.10), so compare full names.
+      - name: Check the tag and the bump branch are free
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUMP_BRANCH: ${{ steps.version.outputs.bump_branch }}
+        run: |
+          if gh api "repos/nocobase/CustomerPortal/git/matching-refs/tags/v${VERSION}" --jq '.[].ref' | grep -qxF "refs/tags/v${VERSION}"; then
+            echo "::error::nocobase/CustomerPortal already has the tag v${VERSION}: this version was released. Bump the version in package.json first."
+            exit 1
+          fi
+          if gh api "repos/nocobase/CustomerPortal/git/matching-refs/heads/${BUMP_BRANCH}" --jq '.[].ref' | grep -qxF "refs/heads/${BUMP_BRANCH}"; then
+            echo "::error::nocobase/CustomerPortal already has the branch ${BUMP_BRANCH}, left by an earlier release. Merge or delete it first."
+            exit 1
+          fi
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Summary
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          COMMIT: ${{ steps.source.outputs.commit }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          {
+            if [ "$DRY_RUN" = "true" ]; then
+              echo '### CustomerPortal release (dry run: nothing is deployed)'
+            else
+              echo '### CustomerPortal release'
+            fi
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Version | \`${VERSION}\` |"
+            echo "| Source | \`nocobase/CustomerPortal@main\` (\`${COMMIT}\`) |"
+            echo "| Image | \`nocobase/customer-portal:prod-${COMMIT:0:7}\` |"
+            echo "| Next version | \`${NEXT}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Build and deploy
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Shared with customerportal-deploy.yml: a deployment in progress is never cancelled.
+    concurrency:
+      group: customerportal-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      # A read-only token for nocobase/CustomerPortal alone, revoked as soon as the source is checked out.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: CustomerPortal
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Check out CustomerPortal
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/CustomerPortal
+          ref: ${{ needs.prepare.outputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: customerportal
+          persist-credentials: false
+          show-progress: false
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Build and deploy
+        uses: ./.github/nocobase3/customerportal-deploy
+        with:
+          sha: ${{ needs.prepare.outputs.commit }}
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+          ssh-key: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
+          deploy-host: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
+          known-hosts: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}
+          cdn-oss-access-key-id: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_ID }}
+          cdn-oss-access-key-secret: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}
+          cdn-oss-bucket: ${{ secrets.CDN_ALI_OSS_BUCKET }}
+          cdn-oss-region: ${{ secrets.CDN_ALI_OSS_REGION }}
+          deploy: ${{ inputs.dry_run && 'false' || 'true' }}
+
+  release:
+    name: Tag the release and bump the version
+    needs: [prepare, deploy]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tagged: ${{ steps.tag.outputs.tagged }}
+      merged: ${{ steps.merge.outputs.merged }}
+      pr_url: ${{ steps.merge.outputs.url }}
+      release_url: ${{ steps.github_release.outputs.url }}
+    steps:
+      # Minted after the deployment so a long build does not consume its one-hour lifetime.
+      - name: Create a CustomerPortal write token
+        id: release_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: CustomerPortal
+          permission-contents: write
+          permission-pull-requests: write
+
+      # Full history and tags: the notes walk `git log <previous tag>..<commit>`.
+      - name: Check out the released commit
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/CustomerPortal
+          ref: ${{ needs.prepare.outputs.commit }}
+          token: ${{ steps.release_token.outputs.token }}
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+          show-progress: false
+
+      - name: Configure git
+        env:
+          RELEASE_TOKEN: ${{ steps.release_token.outputs.token }}
+        run: |
+          git config user.name "nocobase[bot]"
+          git config user.email "179432756+nocobase[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${RELEASE_TOKEN}@github.com/nocobase/CustomerPortal.git"
+
+      # A tag already on the released commit is a retried run; anywhere else it is a conflict.
+      - name: Tag the released commit
+        id: tag
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          tag="v${VERSION}"
+          # ls-remote lists an annotated tag's peeled `^{}` line after the tag itself, and that line is the commit.
+          remote=$(git ls-remote origin "refs/tags/${tag}" "refs/tags/${tag}^{}" | awk '{ print $1 }' | tail -n 1)
+          if [ -n "$remote" ]; then
+            if [ "$remote" != "$COMMIT" ]; then
+              echo "::error::nocobase/CustomerPortal's tag ${tag} points to ${remote} instead of the released commit ${COMMIT}."
+              exit 1
+            fi
+            echo "Tag ${tag} already points to the released commit."
+          else
+            git tag "$tag" "$COMMIT"
+            git push origin "refs/tags/${tag}:refs/tags/${tag}"
+          fi
+          echo "tagged=true" >> "$GITHUB_OUTPUT"
+
+      # The commits on main's first-parent line since the previous `v*` tag, which are the squash merges of the pull requests (their titles end in `(#<n>)`, which GitHub links), grouped by conventional-commit type. Version bumps are left out.
+      - name: Write the release notes
+        id: notes
+        continue-on-error: true
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${COMMIT}^" 2> /dev/null || true)
+          if [ -z "$previous" ]; then
+            echo "The first versioned release of CustomerPortal, built from \`${COMMIT:0:7}\`." > "$notes"
+          else
+            git log --first-parent --format=%s "${previous}..${COMMIT}" | grep -vE '^chore: bump customer portal version to ' > "$RUNNER_TEMP/subjects" || true
+            section() {
+              local title=$1 pattern=$2 lines
+              lines=$(grep -E "$pattern" "$RUNNER_TEMP/subjects" || true)
+              if [ -n "$lines" ]; then
+                printf '### %s\n\n' "$title"
+                sed 's/^/- /' <<< "$lines"
+                echo
+              fi
+            }
+            {
+              section 'New features' '^feat(\(|!|:)'
+              section 'Bug fixes' '^fix(\(|!|:)'
+              others=$(grep -vE '^(feat|fix)(\(|!|:)' "$RUNNER_TEMP/subjects" || true)
+              if [ -n "$others" ]; then
+                printf '### %s\n\n' 'Other changes'
+                sed 's/^/- /' <<< "$others"
+                echo
+              fi
+              echo "**Full changelog**: https://github.com/nocobase/CustomerPortal/compare/${previous}...v${VERSION}"
+            } > "$notes"
+          fi
+          {
+            echo "previous=${previous}"
+            echo "file=${notes}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Only the top-level "version" line changes, so the file keeps its formatting byte for byte; the check then confirms nothing but the version differs.
+      - name: Bump the version
+        env:
+          NEXT: ${{ needs.prepare.outputs.next_version }}
+          BUMP_BRANCH: ${{ needs.prepare.outputs.bump_branch }}
+        run: |
+          git checkout -b "$BUMP_BRANCH"
+          # shellcheck disable=SC2016 # the single-quoted script is JavaScript, its ${} is a template literal
+          node -e '
+            const fs = require("fs");
+            const [file, next] = process.argv.slice(1);
+            const before = fs.readFileSync(file, "utf8");
+            const after = before.replace(/^(  "version": ")[^"]*(")/m, `$1${next}$2`);
+            const a = JSON.parse(before);
+            const b = JSON.parse(after);
+            if (b.version !== next) throw new Error(`${file}: no top-level version to bump`);
+            delete a.version;
+            delete b.version;
+            if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${file}: the bump changed more than the version`);
+            fs.writeFileSync(file, after);
+          ' package.json "$NEXT"
+          git add package.json
+          git diff --cached
+          git commit -m "chore: bump customer portal version to ${NEXT}"
+          git push origin "refs/heads/${BUMP_BRANCH}:refs/heads/${BUMP_BRANCH}"
+
+      # Squashed like every other CustomerPortal pull request: the title with its number and an empty body. gh runs outside the checkout so --delete-branch only deletes the remote branch, and a non-zero exit is checked against the pull request's state before it counts as a failed merge. Conflicts (main changed the version meanwhile) leave the branch for manual resolution.
+      - name: Merge the bump back
+        id: merge
+        env:
+          GH_TOKEN: ${{ steps.release_token.outputs.token }}
+          BUMP_BRANCH: ${{ needs.prepare.outputs.bump_branch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NEXT: ${{ needs.prepare.outputs.next_version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="chore: bump customer portal version to ${NEXT}"
+          pr_url=$(gh pr create -R nocobase/CustomerPortal \
+            --base main \
+            --head "$BUMP_BRANCH" \
+            --title "$title" \
+            --body "CustomerPortal \`${VERSION}\` was deployed and tagged \`v${VERSION}\`; this moves \`main\` on to \`${NEXT}\`. Released by ${RUN_URL}")
+          echo "url=${pr_url}" >> "$GITHUB_OUTPUT"
+          number=${pr_url##*/}
+          cd "$RUNNER_TEMP"
+          set +e
+          gh pr merge "$pr_url" -R nocobase/CustomerPortal --squash --delete-branch --subject "${title} (#${number})" --body ''
+          rc=$?
+          set -e
+          state=$(gh pr view "$pr_url" -R nocobase/CustomerPortal --json state --jq .state || echo UNKNOWN)
+          if [ "$rc" = "0" ] || [ "$state" = "MERGED" ]; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Failed to merge the version bump into main; it needs manual work: ${pr_url}"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Runs whenever the tag exists, even when the bump failed: the deployment and the tag are out, so the release is real. Without notes the release gets a one-line body. Failure is a warning only.
+      - name: Create the GitHub release
+        id: github_release
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.tag.outputs.tagged == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.release_token.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          tag="v${VERSION}"
+          cd "$RUNNER_TEMP"
+          if url=$(gh release view "$tag" -R nocobase/CustomerPortal --json url --jq .url 2> /dev/null); then
+            echo "nocobase/CustomerPortal already has the release ${tag}; it is left alone: ${url}"
+            echo "url=${url}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$NOTES_FILE" ] || [ ! -s "$NOTES_FILE" ]; then
+            NOTES_FILE="$RUNNER_TEMP/release-body.md"
+            echo "CustomerPortal ${VERSION}, built from \`${COMMIT:0:7}\`." > "$NOTES_FILE"
+          fi
+          args=("$tag" -R nocobase/CustomerPortal --verify-tag --title "$tag" --notes-file "$NOTES_FILE")
+          if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
+          if gh release create "${args[@]}"; then
+            url=$(gh release view "$tag" -R nocobase/CustomerPortal --json url --jq .url || echo "https://github.com/nocobase/CustomerPortal/releases/tag/${tag}")
+            echo "url=${url}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Creating the GitHub release ${tag} of nocobase/CustomerPortal failed; create it by hand."
+          fi
+
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NEXT: ${{ needs.prepare.outputs.next_version }}
+          TAGGED: ${{ steps.tag.outputs.tagged }}
+          MERGED: ${{ steps.merge.outputs.merged }}
+          PR_URL: ${{ steps.merge.outputs.url }}
+          RELEASE_URL: ${{ steps.github_release.outputs.url }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+        run: |
+          {
+            echo '### Released'
+            echo
+            echo "- Git tag \`v${VERSION}\`: ${TAGGED:-not pushed}"
+            echo "- Bump to \`${NEXT}\`: ${PR_URL:-no pull request} (merged: ${MERGED:-no})"
+            echo "- GitHub release: ${RELEASE_URL:-not created}"
+            echo
+            if [ -n "$NOTES_FILE" ] && [ -s "$NOTES_FILE" ]; then
+              echo '### Release notes'
+              echo
+              cat "$NOTES_FILE"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A bump left unmerged blocks the next release (its version is already tagged), so the run fails for it.
+      - name: Fail the run when the bump was not merged
+        if: ${{ steps.merge.outputs.merged == 'false' }}
+        run: exit 1
+
+  # One card for every real release, whichever job ended it. The script is nocobase/nocobase's, read from that public repository without a credential.
+  notify:
+    name: Notify Feishu
+    needs: [prepare, deploy, release]
+    if: ${{ !cancelled() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the notify script
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/nocobase
+          ref: v3-develop
+          sparse-checkout: scripts/feishu-notify.sh
+          sparse-checkout-cone-mode: false
+          path: nocobase-scripts
+          persist-credentials: false
+
+      - name: Send the card
+        env:
+          WEBHOOK_URL: ${{ secrets.RELEASE_RESULT_FEISHU_WEBHOOK_URL }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: nocobase/CustomerPortal
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREPARE: ${{ needs.prepare.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          RELEASE: ${{ needs.release.result }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          NEXT: ${{ needs.prepare.outputs.next_version }}
+          TAGGED: ${{ needs.release.outputs.tagged }}
+          MERGED: ${{ needs.release.outputs.merged }}
+          PR_URL: ${{ needs.release.outputs.pr_url }}
+          RELEASE_URL: ${{ needs.release.outputs.release_url }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo '::warning::RELEASE_RESULT_FEISHU_WEBHOOK_URL is not configured; no card is sent.'
+            exit 0
+          fi
+          nl=$'\n'
+          export TITLE='客户中心发版'
+          if [ "$RELEASE" = "success" ]; then
+            export STATUS=success STATUS_TEXT_SUCCESS='发布成功'
+            content="版本 **${VERSION}**（\`${COMMIT:0:7}\`）已部署到 https://customer.nocobase.com ，git tag \`v${VERSION}\` 已打，\`main\` 的版本号已改为 \`${NEXT}\`。"
+            if [ -z "$RELEASE_URL" ]; then content="${content}${nl}⚠️ GitHub Release 没有创建成功，需要手动创建。"; fi
+          else
+            export STATUS=failure STATUS_TEXT_FAILURE='需要人工介入'
+            if [ "$PREPARE" != "success" ]; then
+              content='发版前的检查没有通过（版本号无效，或者这个版本已经发过），没有部署任何东西。'
+            elif [ "$DEPLOY" != "success" ]; then
+              content="版本 **${VERSION}**（\`${COMMIT:0:7}\`）构建或部署失败，服务器能回滚时已回到上一个版本。没有打 tag，也没有改版本号。"
+            elif [ "$TAGGED" != "true" ]; then
+              content="版本 **${VERSION}**（\`${COMMIT:0:7}\`）已部署，但 git tag \`v${VERSION}\` 没有打上，需要手动补。"
+            else
+              content="版本 **${VERSION}**（\`${COMMIT:0:7}\`）已部署，git tag \`v${VERSION}\` 已打，但把版本号改成 \`${NEXT}\` 的 PR 没有合回 \`main\`：${PR_URL:-没有创建 PR}${nl}**合回之前不要再次发版**，否则会因为版本已存在而失败。"
+            fi
+          fi
+          export CONTENT="$content"
+          if [ -n "$RELEASE_URL" ]; then export RELEASE_URL; else unset RELEASE_URL; fi
+          bash nocobase-scripts/scripts/feishu-notify.sh

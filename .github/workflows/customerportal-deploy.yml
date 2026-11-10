@@ -1,13 +1,13 @@
 name: CustomerPortal deploy
 run-name: customerportal-deploy:${{ inputs.ref }}
 
-# A manual redeploy of the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com), for a branch at its current head: run it by hand with
+# A manual redeploy of the private nocobase/CustomerPortal to the production environment (https://customer.nocobase.com), for a branch at its current head, kept for urgent fixes and rollbacks: production is normally released with customerportal-release.yml, which also tags the version and bumps it. Run it by hand with
 #
 #   gh workflow run customerportal-deploy.yml -R 2013xile/nocobase-ci -f ref=main
 #
 # With `-f deploy=false` it builds and uploads the client assets to the CDN only, pushing no image and deploying nothing, which tries out a change to the CDN upload without touching production.
 #
-# Nothing dispatches it. The deployment of every push to `main` is the `Deploy` job of customerportal-ci.yml, which nocobase-bot forwards as a check on the pushed commit; this workflow builds and deploys in exactly the same way (the composite action customerportal-deploy) and shares its concurrency group, so a manual redeploy and a forwarded one never run at the same time. It creates no check.
+# Nothing dispatches it, and it tags nothing, bumps nothing and creates no check. It builds and deploys exactly as the release does (the composite action customerportal-deploy) and shares its concurrency group, so a redeploy and a release never deploy at the same time. Redeploying the commit production already runs changes nothing: the server's deploy script skips a tag it is already running.
 #
 # This repository is public: nothing uploads CustomerPortal's source or server build, and nothing is cached. The client assets go to the CDN, where the deployed page loads them from anyway.
 
