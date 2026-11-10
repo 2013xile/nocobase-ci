@@ -93,7 +93,7 @@ jobs:
           path: nocobase-bot
           image: nocobase/nocobase-bot
           sha: ${{ steps.resolve.outputs.commit }}
-          push-main: ${{ inputs.ref == 'main' }}
+          moving-tag: ${{ inputs.ref == 'main' && 'main' || '' }}
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
           registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
           registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}

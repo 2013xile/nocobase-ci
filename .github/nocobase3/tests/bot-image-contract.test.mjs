@@ -22,6 +22,6 @@ test('checks out the private nocobase/nocobase-bot at the resolved commit throug
 });
 
 test('builds through the shared image-push action, tagging main only for a build of main', () => {
-  assert.match(workflow, /uses: \.\/\.github\/nocobase3\/image-push\n        with:\n          path: nocobase-bot\n          image: nocobase\/nocobase-bot\n          sha: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n          push-main: \$\{\{ inputs\.ref == 'main' \}\}\n/u);
+  assert.match(workflow, /uses: \.\/\.github\/nocobase3\/image-push\n        with:\n          path: nocobase-bot\n          image: nocobase\/nocobase-bot\n          sha: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n          moving-tag: \$\{\{ inputs\.ref == 'main' && 'main' \|\| '' \}\}\n/u);
   assert.match(workflow, /repository: nocobase\/nocobase-bot\n          ref: \$\{\{ steps\.resolve\.outputs\.commit \}\}\n(?:          .+\n)*?          path: nocobase-bot\n/u);
 });
