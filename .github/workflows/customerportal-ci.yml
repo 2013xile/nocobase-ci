@@ -14,7 +14,7 @@ run-name: customerportal-ci:${{ inputs.request_id }}
 # own App `customerportal-pr-<n>` in Studio's `preview` environment, as the workflow Studio generated in the repository
 # did (`nb-studio-customerportal-preview.yml`), which this replaces.
 #
-# This repository is public: nothing uploads CustomerPortal's source or its application build, and nothing is cached.
+# This repository is public: nothing uploads CustomerPortal's source or its server build, and nothing is cached. `Deploy` uploads the client assets to the CDN, where the deployed page loads them from anyway.
 
 on:
   workflow_dispatch:
@@ -334,3 +334,7 @@ jobs:
           ssh-key: ${{ secrets.CUSTOMERPORTAL_DEPLOY_SSH_KEY }}
           deploy-host: ${{ vars.CUSTOMERPORTAL_DEPLOY_HOST }}
           known-hosts: ${{ vars.CUSTOMERPORTAL_DEPLOY_KNOWN_HOSTS }}
+          cdn-oss-access-key-id: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_ID }}
+          cdn-oss-access-key-secret: ${{ secrets.CDN_ALI_OSS_ACCESS_KEY_SECRET }}
+          cdn-oss-bucket: ${{ secrets.CDN_ALI_OSS_BUCKET }}
+          cdn-oss-region: ${{ secrets.CDN_ALI_OSS_REGION }}
