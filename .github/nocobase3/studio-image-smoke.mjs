@@ -53,13 +53,11 @@ try {
       assert.equal(Object.keys(document.paths).some((key) => /\/quality(?:\/|$)/.test(key)), edition === 'studio-ee');
     }
   }
-  const identity = JSON.parse(docker('exec', name, 'node', '--input-type=module', '-e', `
-    import { createRequire } from 'node:module';
+  const identity = JSON.parse(docker('exec', '--workdir', '/app/dist', name, 'node', '--input-type=module', '-e', `
     import { readFileSync } from 'node:fs';
+    import { ServiceContainer } from '@nocobase/service-provider';
     import Provider from '/app/dist/server/providers/edition.js';
     import { studioEditionToken } from '/app/dist/server/edition-service.js';
-    const require = createRequire('/app/dist/package.json');
-    const { ServiceContainer } = await import(require.resolve('@nocobase/service-provider'));
     const container = new ServiceContainer();
     new Provider({ container, paths: { root: (file) => '/app/dist/' + file } }).register();
     const info = container.resolve(studioEditionToken);
