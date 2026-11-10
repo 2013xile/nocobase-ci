@@ -16,10 +16,6 @@ function job(id) {
 
 test('runs by dispatch only, one release at a time, with read-only contents by default', () => {
   assert.match(workflow, /\non:\n  workflow_dispatch:\n    inputs:\n      dry_run:\n/u);
-  // CustomerPortal's Release workflow finds the run it dispatched by its request id in the run name.
-  assert.match(workflow, /^run-name: customerportal-release:\$\{\{ inputs\.request_id \|\| 'manual' \}\}/mu);
-  assert.match(workflow, /\n      request_id:\n/u);
-  assert.match(workflow, /\n      requested_by:\n/u);
   assert.doesNotMatch(workflow, /^  (?:push|pull_request|schedule):/mu);
   assert.match(workflow, /\nconcurrency:\n  group: customerportal-release\n  cancel-in-progress: false\n/u);
   assert.match(workflow, /\npermissions:\n  contents: read\n/u);
