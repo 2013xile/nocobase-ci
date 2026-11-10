@@ -1,25 +1,9 @@
 name: Bot image
 run-name: bot-image:${{ inputs.ref }}
 
-# Builds nocobase-bot's image from the private nocobase/nocobase-bot repository, from any branch, tag or commit, and
-# pushes it to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is
-# `main`. A build of any other ref never moves `main`, so a hand-built old commit cannot replace what is deployed.
+# A manual build of nocobase-bot's image from the private nocobase/nocobase-bot repository, from any branch, tag or commit, pushed to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is `main`. A build of any other ref never moves `main`, so a hand-built old commit cannot replace what is deployed. It builds exactly as the forwarded CI does (the composite action image-push).
 #
-# `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default (manifest type
-# application/vnd.oci.empty.v1+json) and the registry rejects them with "unknown manifest class".
-#
-# The server runs it with the compose file in ~/deploy/docker/nocobase-bot (on noco-bot), whose image is
-# registry.cn-beijing.aliyuncs.com/nocobase/nocobase-bot:${IMAGE_TAG}. A build of `main` is then deployed by the `deploy`
-# job: it calls the server over SSH with a key that the server's authorized_keys restricts to
-# /root/deploy/docker/nocobase-bot/deploy.sh, sending only `sha-<short sha>`; the script backs up the forwarding state,
-# sets IMAGE_TAG, restarts the bot, health-checks it and goes back to the previous tag when that fails (the script is
-# kept in nocobase-bot's deploy/deploy.sh). The bot restarts itself this way: its forwarding state is in SQLite under
-# data/, it resumes the requests in progress when it starts, and webhook deliveries refused while it restarts are
-# redelivered.
-#
-# nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/nocobase-bot's `main`; a newer push
-# cancels the build in progress, but never a deployment in progress. Run it by hand for any other ref, which builds
-# without deploying, or with `-f deploy=false` to build `main` without deploying:
+# Pushes to `main` are built and deployed by bot-ci.yml, which nocobase-bot forwards with the checks `Build` and `Deploy`; nothing dispatches this workflow any more. A build of `main` here is deployed too, by the `deploy` job, in the group `bot-deploy` it shares with bot-ci.yml, so the two never deploy at the same time. See "Image deployments over SSH" in .github/nocobase3/README.md. Run it by hand, with `-f deploy=false` to build `main` without deploying it; any other ref is never deployed:
 #
 #   gh workflow run bot-image.yml -R 2013xile/nocobase-ci -f ref=main
 
@@ -52,6 +36,12 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
       # A read-only token for nocobase/nocobase-bot alone, revoked as soon as the source is checked out.
       - name: Create a read-only source token
         id: app-token
@@ -81,6 +71,7 @@ jobs:
           repository: nocobase/nocobase-bot
           ref: ${{ steps.resolve.outputs.commit }}
           token: ${{ steps.app-token.outputs.token }}
+          path: nocobase-bot
           persist-credentials: false
           show-progress: false
 
@@ -96,50 +87,16 @@ jobs:
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
 
-      - name: Sign in to the registry
-        uses: docker/login-action@v3
+      - name: Build and push the image
+        uses: ./.github/nocobase3/image-push
         with:
+          path: nocobase-bot
+          image: nocobase/nocobase-bot
+          sha: ${{ steps.resolve.outputs.commit }}
+          push-main: ${{ inputs.ref == 'main' }}
           registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          username: ${{ secrets.ALI_DOCKER_USERNAME }}
-          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # Tags are built inline from the registry secret rather than passed through a step output, which would drop it.
-      # The second line is empty unless the ref is `main`, and an empty line in `tags` is ignored.
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          provenance: false
-          sbom: false
-          push: true
-          tags: |
-            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/nocobase-bot:sha-${{ steps.resolve.outputs.sha }}
-            ${{ inputs.ref == 'main' && format('{0}/nocobase/nocobase-bot:main', secrets.ALI_DOCKER_REGISTRY) || '' }}
-
-      - name: Inspect the pushed image
-        env:
-          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: docker buildx imagetools inspect "${REGISTRY}/nocobase/nocobase-bot:sha-${SHA}"
-
-      - name: Summary
-        env:
-          REF: ${{ inputs.ref }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: |
-          {
-            echo '### Bot image'
-            echo
-            echo "Built \`${REF}\` (\`${SHA}\`) for linux/amd64."
-            echo
-            echo "- \`nocobase/nocobase-bot:sha-${SHA}\`"
-            if [ "$REF" = main ]; then echo '- `nocobase/nocobase-bot:main`'; fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
 
   deploy:
     name: Deploy to noco-bot

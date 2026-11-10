@@ -1,11 +1,9 @@
 name: Pro registry image
 run-name: pro-registry-image:${{ inputs.ref }}
 
-# Tests and builds the image of pkg-v3.nocobase.com (NocoBase 3's private npm and Docker registry) from the private nocobase/v3-pro-registry at a `ref`, and pushes it to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is `main`. A build of any other ref never moves `main`.
+# A manual test and build of the image of pkg-v3.nocobase.com (NocoBase 3's private npm and Docker registry) from the private nocobase/v3-pro-registry at a `ref`, pushed to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is `main`. A build of any other ref never moves `main`. It builds exactly as the forwarded CI does (the composite action image-push).
 #
-# A build of `main` is then deployed by the `deploy` job: it calls noco-hk over SSH with a key that the server's authorized_keys restricts to /root/deploy/apps/pkg-v3/deploy.sh, sending only `sha-<short sha>`; the script backs up the SQLite databases, sets IMAGE_TAG, restarts the `registry` service (the `docker-registry` container is left alone), health-checks it and goes back to the previous tag when that fails. The script is kept in v3-pro-registry's deploy/deploy.sh. The restart interrupts the registry for a few seconds.
-#
-# nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/v3-pro-registry's `main`; a newer push cancels the build in progress, but never a deployment in progress. Run it by hand for any other ref, which builds without deploying, or with `-f deploy=false` to build `main` without deploying:
+# Pull requests and pushes to `main` are tested, built and deployed by pro-registry-ci.yml, which nocobase-bot forwards with the checks `Test`, `Build` and `Deploy`; nothing dispatches this workflow any more. A build of `main` here is deployed too, by the `deploy` job, in the group `pro-registry-deploy` it shares with pro-registry-ci.yml. See "Image deployments over SSH" in .github/nocobase3/README.md. Run it by hand, with `-f deploy=false` to build `main` without deploying it; any other ref is never deployed:
 #
 #   gh workflow run pro-registry-image.yml -R 2013xile/nocobase-ci -f ref=main
 #
@@ -40,6 +38,12 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
       # A read-only token for nocobase/v3-pro-registry alone, revoked as soon as the source is checked out.
       - name: Create a read-only source token
         id: app-token
@@ -69,6 +73,7 @@ jobs:
           repository: nocobase/v3-pro-registry
           ref: ${{ steps.resolve.outputs.commit }}
           token: ${{ steps.app-token.outputs.token }}
+          path: v3-pro-registry
           persist-credentials: false
           show-progress: false
 
@@ -88,6 +93,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
+          package_json_file: v3-pro-registry/package.json
           run_install: false
 
       - name: Set up Node.js
@@ -96,59 +102,28 @@ jobs:
           node-version: 24
 
       - name: Install
+        working-directory: v3-pro-registry
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
+        working-directory: v3-pro-registry
         run: pnpm typecheck
 
       - name: Test
+        working-directory: v3-pro-registry
         run: pnpm test
 
-      - name: Sign in to the registry
-        uses: docker/login-action@v3
+      - name: Build and push the image
+        uses: ./.github/nocobase3/image-push
         with:
-          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          username: ${{ secrets.ALI_DOCKER_USERNAME }}
-          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class"). The runner reaches the public npm registry directly rather than through the image's default mirror.
-      # Tags are built inline from the registry secret rather than passed through a step output, which would drop it. The second line is empty unless the ref is `main`, and an empty line in `tags` is ignored.
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
+          path: v3-pro-registry
+          image: nocobase/pro-registry
+          sha: ${{ steps.resolve.outputs.commit }}
+          push-main: ${{ inputs.ref == 'main' }}
           build-args: NPM_REGISTRY=https://registry.npmjs.org/
-          platforms: linux/amd64
-          provenance: false
-          sbom: false
-          push: true
-          tags: |
-            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/pro-registry:sha-${{ steps.resolve.outputs.sha }}
-            ${{ inputs.ref == 'main' && format('{0}/nocobase/pro-registry:main', secrets.ALI_DOCKER_REGISTRY) || '' }}
-
-      - name: Inspect the pushed image
-        env:
-          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: docker buildx imagetools inspect "${REGISTRY}/nocobase/pro-registry:sha-${SHA}"
-
-      - name: Summary
-        env:
-          REF: ${{ inputs.ref }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-        run: |
-          {
-            echo '### Pro registry image'
-            echo
-            echo "Tested and built \`${REF}\` (\`${SHA}\`) for linux/amd64."
-            echo
-            echo "- \`nocobase/pro-registry:sha-${SHA}\`"
-            if [ "$REF" = main ]; then echo '- `nocobase/pro-registry:main`'; fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          registry-username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          registry-password: ${{ secrets.ALI_DOCKER_PASSWORD }}
 
   deploy:
     name: Deploy to pkg-v3
