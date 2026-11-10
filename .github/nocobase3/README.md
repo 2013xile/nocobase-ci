@@ -36,11 +36,27 @@ Image publication does not update the running server. Its deployment owner selec
 
 ## Bot image
 
-`bot-image.yml` builds `nocobase-bot`'s own image from the private `nocobase/nocobase-bot` at a `ref` and pushes it to the internal registry for linux/amd64 only, as `nocobase/nocobase-bot:sha-<short sha>` and, when `ref` is `main`, the moving tag `nocobase/nocobase-bot:main`. A build of any other ref never moves `main`. `nocobase-bot` dispatches it with `ref: main` for every push to `nocobase/nocobase-bot`'s `main`, and a newer push cancels the build in progress; run it by hand for any other ref with `gh workflow run bot-image.yml -R 2013xile/nocobase-ci -f ref=<ref>`. It is not a forwarded CI row: it creates no check and has no `request_id`.
+`bot-image.yml` builds `nocobase-bot`'s own image from the private `nocobase/nocobase-bot` at a `ref` and pushes it to the internal registry for linux/amd64 only, as `nocobase/nocobase-bot:sha-<short sha>` and, when `ref` is `main`, the moving tag `nocobase/nocobase-bot:main`. A build of any other ref never moves `main`. `nocobase-bot` dispatches it with `ref: main` for every push to `nocobase/nocobase-bot`'s `main`; run it by hand for any other ref with `gh workflow run bot-image.yml -R 2013xile/nocobase-ci -f ref=<ref>`. It is not a forwarded CI row: it creates no check and has no `request_id`.
 
 - The existing read-only GitHub App token reads only `nocobase/nocobase-bot` and is revoked before the build. The GitHub App must be installed on `nocobase/nocobase-bot`.
 - `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them (`unknown manifest class for application/vnd.oci.empty.v1+json`).
-- It uses the existing registry secrets `ALI_DOCKER_REGISTRY`, `ALI_DOCKER_USERNAME` and `ALI_DOCKER_PASSWORD`. Nothing deploys the image: on the server, `docker compose pull && docker compose up -d`.
+- It uses the existing registry secrets `ALI_DOCKER_REGISTRY`, `ALI_DOCKER_USERNAME` and `ALI_DOCKER_PASSWORD`.
+- A build of `main` is deployed to noco-bot by the `deploy` job (see "Image deployments over SSH" below), with the secret `BOT_DEPLOY_SSH_KEY` and the variables `BOT_DEPLOY_HOST` (`116.62.46.238`) and `BOT_DEPLOY_KNOWN_HOSTS`; the server's script is `/root/deploy/docker/nocobase-bot/deploy.sh`, kept in nocobase-bot's `deploy/deploy.sh`. `-f deploy=false` builds `main` without deploying it. The bot restarts itself this way, which is safe: its forwarding state is in SQLite under the mounted `data/`, it resumes the requests in progress when it starts, and the webhook deliveries refused while it restarts are redelivered by its startup scan.
+
+## Pro registry image
+
+`pro-registry-image.yml` builds the image of pkg-v3.nocobase.com from the private `nocobase/v3-pro-registry` at a `ref`, after `pnpm typecheck` and `pnpm test`, and pushes it for linux/amd64 as `nocobase/pro-registry:sha-<short sha>` and, when `ref` is `main`, `nocobase/pro-registry:main`. `nocobase-bot` dispatches it with `ref: main` for every push to `nocobase/v3-pro-registry`'s `main` that does not say `[skip ci]`; run it by hand with `gh workflow run pro-registry-image.yml -R 2013xile/nocobase-ci -f ref=<ref>`. It creates no check.
+
+- The read-only GitHub App token reads only `nocobase/v3-pro-registry` and is revoked before anything is installed. The GitHub App must be installed on `nocobase/v3-pro-registry`.
+- The image installs from the public npm registry (`NPM_REGISTRY=https://registry.npmjs.org/`) instead of the Dockerfile's default mirror.
+- A build of `main` is deployed to noco-hk by the `deploy` job, with the secret `PRO_REGISTRY_DEPLOY_SSH_KEY` and the variables `PRO_REGISTRY_DEPLOY_HOST` (`47.243.61.38`) and `PRO_REGISTRY_DEPLOY_KNOWN_HOSTS`; the server's script is `/root/deploy/apps/pkg-v3/deploy.sh`, kept in v3-pro-registry's `deploy/deploy.sh`. It restarts the `registry` service only, which interrupts the registry for a few seconds; the `docker-registry` container is left alone. `-f deploy=false` builds `main` without deploying it.
+
+## Image deployments over SSH
+
+`bot-image.yml` and `pro-registry-image.yml` deploy through the composite action `.github/nocobase3/ssh-deploy`, as CustomerPortal's deployment does: it calls the server as `root` on port 22 with `StrictHostKeyChecking=yes`, sending only the tag, `ssh root@<host> sha-<short sha>`. Each server's `authorized_keys` pins its own key to `restrict,command="<deploy script>"`, so the key opens no shell and runs nothing else; the script reads the tag from `SSH_ORIGINAL_COMMAND` (it must match `^sha-[0-9a-f]{7,40}$`), takes a lock, pulls the image, backs up the SQLite databases with `VACUUM INTO` (keeping the newest 2), sets `IMAGE_TAG` in its `.env`, runs `docker compose up -d`, waits for the health check, and goes back to the previous tag when that fails, returning non-zero. Its output is the job log, the job summary names the tag and the result, and exit code 75 means another deployment is running or deployments are paused. The key is acceptable at repository level for the same reason as CustomerPortal's. Only `sha-` tags are deployed: the scripts skip a tag they already run, so a moving tag would never be redeployed.
+
+- Concurrency: the building job is grouped by ref and a newer build cancels it; the `deploy` job has its own group (`bot-deploy`, `pro-registry-deploy`) with `cancel-in-progress: false`, so a newer push never cancels a deployment in progress and replaces only the one waiting.
+- Roll back, or deploy by hand, on the server: `<deploy script> sha-<short sha>` (an older `sha-` tag is still in the registry). To pause deployments, point the key's `command=` at a script that only runs `exit 75`.
 
 ## NocoBase 3 preview
 
@@ -101,7 +117,7 @@ node --test .github/nocobase3/tests/*.test.mjs
 Lint the workflows with:
 
 ```bash
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/customerportal-ci.yml .github/workflows/studio-image.yml .github/workflows/bot-image.yml .github/workflows/customerportal-deploy.yml
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/workflows/nocobase3-pro-ci.yml .github/workflows/studio-ci.yml .github/workflows/nocobase3-preview.yml .github/workflows/customerportal-ci.yml .github/workflows/studio-image.yml .github/workflows/bot-image.yml .github/workflows/customerportal-deploy.yml .github/workflows/pro-registry-image.yml
 ```
 
 

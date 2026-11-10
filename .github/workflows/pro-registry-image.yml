@@ -1,0 +1,178 @@
+name: Pro registry image
+run-name: pro-registry-image:${{ inputs.ref }}
+
+# Tests and builds the image of pkg-v3.nocobase.com (NocoBase 3's private npm and Docker registry) from the private nocobase/v3-pro-registry at a `ref`, and pushes it to the internal registry as linux/amd64: `sha-<short sha>` always, plus the moving tag `main` when `ref` is `main`. A build of any other ref never moves `main`.
+#
+# A build of `main` is then deployed by the `deploy` job: it calls noco-hk over SSH with a key that the server's authorized_keys restricts to /root/deploy/apps/pkg-v3/deploy.sh, sending only `sha-<short sha>`; the script backs up the SQLite databases, sets IMAGE_TAG, restarts the `registry` service (the `docker-registry` container is left alone), health-checks it and goes back to the previous tag when that fails. The script is kept in v3-pro-registry's deploy/deploy.sh. The restart interrupts the registry for a few seconds.
+#
+# nocobase-bot dispatches it with `ref` set to `main` for every push to nocobase/v3-pro-registry's `main`; a newer push cancels the build in progress, but never a deployment in progress. Run it by hand for any other ref, which builds without deploying, or with `-f deploy=false` to build `main` without deploying:
+#
+#   gh workflow run pro-registry-image.yml -R 2013xile/nocobase-ci -f ref=main
+#
+# This repository is public: nothing uploads the source, and nothing is cached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of nocobase/v3-pro-registry to build.
+        required: true
+        default: main
+        type: string
+      deploy:
+        description: Deploy the image to pkg-v3 once it is built; only a build of `main` is ever deployed.
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: Test and build the linux/amd64 image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A newer build of the same ref replaces this one; the deployment has its own group and is never cancelled.
+    concurrency:
+      group: pro-registry-image-${{ inputs.ref }}
+      cancel-in-progress: true
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      # A read-only token for nocobase/v3-pro-registry alone, revoked as soon as the source is checked out.
+      - name: Create a read-only source token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: v3-pro-registry
+          permission-contents: read
+          skip-token-revoke: true
+
+      # Resolves the ref once, so the checkout and the tag name the same commit even if the branch moves meanwhile.
+      - name: Resolve the ref
+        id: resolve
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          commit=$(gh api "repos/nocobase/v3-pro-registry/commits/${REF}" --jq .sha)
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "sha=${commit:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out v3-pro-registry
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/v3-pro-registry
+          ref: ${{ steps.resolve.outputs.commit }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+          show-progress: false
+
+      - name: Revoke the source token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      # The pnpm of the repository's `packageManager`.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Sign in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          username: ${{ secrets.ALI_DOCKER_USERNAME }}
+          password: ${{ secrets.ALI_DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # `provenance: false` and `sbom: false` must stay: buildx attaches attestations by default and the registry rejects them ("unknown manifest class"). The runner reaches the public npm registry directly rather than through the image's default mirror.
+      # Tags are built inline from the registry secret rather than passed through a step output, which would drop it. The second line is empty unless the ref is `main`, and an empty line in `tags` is ignored.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          build-args: NPM_REGISTRY=https://registry.npmjs.org/
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          push: true
+          tags: |
+            ${{ secrets.ALI_DOCKER_REGISTRY }}/nocobase/pro-registry:sha-${{ steps.resolve.outputs.sha }}
+            ${{ inputs.ref == 'main' && format('{0}/nocobase/pro-registry:main', secrets.ALI_DOCKER_REGISTRY) || '' }}
+
+      - name: Inspect the pushed image
+        env:
+          REGISTRY: ${{ secrets.ALI_DOCKER_REGISTRY }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: docker buildx imagetools inspect "${REGISTRY}/nocobase/pro-registry:sha-${SHA}"
+
+      - name: Summary
+        env:
+          REF: ${{ inputs.ref }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          {
+            echo '### Pro registry image'
+            echo
+            echo "Tested and built \`${REF}\` (\`${SHA}\`) for linux/amd64."
+            echo
+            echo "- \`nocobase/pro-registry:sha-${SHA}\`"
+            if [ "$REF" = main ]; then echo '- `nocobase/pro-registry:main`'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to pkg-v3
+    needs: image
+    if: ${{ inputs.ref == 'main' && inputs.deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A deployment in progress is never cancelled; the one waiting behind it is replaced by a newer one.
+    concurrency:
+      group: pro-registry-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Deploy
+        uses: ./.github/nocobase3/ssh-deploy
+        with:
+          name: pkg-v3
+          tag: sha-${{ needs.image.outputs.sha }}
+          ssh-key: ${{ secrets.PRO_REGISTRY_DEPLOY_SSH_KEY }}
+          deploy-host: ${{ vars.PRO_REGISTRY_DEPLOY_HOST }}
+          known-hosts: ${{ vars.PRO_REGISTRY_DEPLOY_KNOWN_HOSTS }}
+          secret-names: PRO_REGISTRY_DEPLOY_SSH_KEY, PRO_REGISTRY_DEPLOY_HOST or PRO_REGISTRY_DEPLOY_KNOWN_HOSTS
