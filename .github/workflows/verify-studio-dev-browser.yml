@@ -1,0 +1,108 @@
+name: Verify Studio dev browser image
+run-name: Studio dev 7515f99 E2E with browser image fix
+'on':
+  push:
+    branches:
+    - fix/verify-studio-dev-browser-20261111
+permissions:
+  contents: read
+jobs:
+  e2e:
+    name: Studio e2e
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+    - name: Check out trusted CI helpers
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+        sparse-checkout: .github/nocobase3
+        repository: chenos/nocobase-ci
+        ref: e8e0c6caa7510dbc7ccb50cb260a0b05c74f9f05
+    - name: Check out the trusted source helper
+      uses: actions/checkout@v4
+      with:
+        repository: 2013xile/nocobase-ci
+        ref: 31dd8f0230c195ce32d36dcf26bc58b18d0b7071
+        path: source-helper
+        sparse-checkout: .github/nocobase3
+        persist-credentials: false
+    - name: Check out the latest merged dev commit
+      uses: ./source-helper/.github/nocobase3/checkout
+      with:
+        repository: studio
+        path: studio
+        app-id: ${{ vars.NOCOBASE_APP_ID }}
+        private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+        request-id: 9c00dfe1-80b2-4ff1-99ba-c6b090879768
+        event-name: push
+        head-sha: 7515f99a07aec60a421dc248f494452d385c4d27
+        base-sha: 7515f99a07aec60a421dc248f494452d385c4d27
+        target-branch: dev
+        pr-number: '0'
+        skip-label: 'false'
+        merge-pull-request: 'false'
+        partial-history: 'true'
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        package_json_file: studio/package.json
+        run_install: false
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - name: Use the committed dev framework
+      id: framework
+      working-directory: studio
+      run: 'echo "sha=$(git -C vendor/nocobase3 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+        echo "install-flag=--frozen-lockfile" >> "$GITHUB_OUTPUT"'
+    - name: Name the framework build
+      id: framework-build
+      env:
+        FRAMEWORK_SHA: ${{ steps.framework.outputs.sha }}
+      run: node .github/nocobase3/framework-packages.mjs studio "$FRAMEWORK_SHA"
+    - name: Restore the framework build
+      id: framework-cache
+      uses: actions/cache/restore@v4
+      with:
+        key: ${{ steps.framework-build.outputs.key }}
+        path: studio/vendor/nocobase3/packages/*/*/dist
+    - name: Install dependencies
+      working-directory: studio
+      env:
+        INSTALL_FLAG: ${{ steps.framework.outputs.install-flag }}
+      run: pnpm install "$INSTALL_FLAG"
+    - name: Verify Chromium
+      timeout-minutes: 5
+      working-directory: studio
+      run: "../.github/nocobase3/run-studio-browser.sh \"$PWD\" node --input-type=module\
+        \ <<'NODE'\nimport { chromium } from '@playwright/test';\nconst browser =\
+        \ await chromium.launch();\ntry {\n  const page = await browser.newPage();\n\
+        \  await page.setContent('<title>Studio browser check</title>');\n  if (await\
+        \ page.title() !== 'Studio browser check') throw new Error('Chromium check\
+        \ failed');\n  console.log(`Chromium ${browser.version()} is ready`);\n} finally\
+        \ {\n  await browser.close();\n}\nNODE\n"
+    - name: Build Studio
+      working-directory: studio
+      env:
+        FRAMEWORK_CACHED: ${{ steps.framework-cache.outputs.cache-hit }}
+      run: "set -euo pipefail\nif [ \"$FRAMEWORK_CACHED\" = true ]; then\n  pnpm --filter\
+        \ '@nocobase/studio^...' --filter '!./vendor/**' build\n  NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD=1\
+        \ pnpm build\nelse\n  pnpm build\nfi\n"
+    - name: Flows
+      working-directory: studio
+      run: ../.github/nocobase3/run-studio-browser.sh "$PWD" pnpm test:e2e
+    - name: Upload failed test traces
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: studio-e2e-results
+        path: studio/test-results
+        if-no-files-found: ignore
+        retention-days: 3
