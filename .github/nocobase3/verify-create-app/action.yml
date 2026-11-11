@@ -38,7 +38,8 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       run: |
         set -euo pipefail
-        pnpm --filter './packages/**' --filter './vendor/nocobase3/packages/**' \
+        # The outer build owns dependency ordering; nested app builds must not rebuild shared outputs.
+        NOCOBASE_SKIP_WORKSPACE_DEPENDENCY_BUILD=1 pnpm --filter './packages/**' --filter './vendor/nocobase3/packages/**' \
           --filter '!./packages/templates/**' --filter '!./vendor/nocobase3/packages/templates/**' \
           --recursive --if-present build
 
