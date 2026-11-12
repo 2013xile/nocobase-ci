@@ -606,3 +606,103 @@ jobs:
             exit 1
           fi
           echo 'No prerelease versions found'
+
+  # Checks the pull request's description against nocobase3-pro's .github/pull_request_template.md with
+  # nocobase/nocobase's scripts/check-pr-body.mjs from v3-develop, run with `--no-module`. No source code is checked
+  # out or run: a token that can only read nocobase3-pro's pull requests reads the current title and body and is revoked
+  # before the check runs. Editing the description does not dispatch a new run: re-run this check afterwards. Pull
+  # requests opened by the release workflows carry only versions and changelogs and pass without a check.
+  pr-description:
+    name: PR description
+    if: ${{ inputs.event_name == 'pull_request' && (inputs.target_branch == 'main' || inputs.target_branch == 'develop') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+
+      - name: Validate dispatch inputs
+        env:
+          REPOSITORY: nocobase3-pro
+          CHECKOUT_PATH: nocobase
+          REQUEST_ID: ${{ inputs.request_id }}
+          EVENT_NAME: ${{ inputs.event_name }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: node .github/nocobase3/validate-inputs.mjs
+
+      - name: Create a pull request read token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase3-pro
+          permission-pull-requests: read
+          skip-token-revoke: true
+
+      - name: Save the pull request description
+        id: pull-request
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          answer=$(curl --fail-with-body --silent --show-error --location --retry 3 --retry-all-errors \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/nocobase/nocobase3-pro/pulls/$PR_NUMBER") || {
+            echo "::error::Could not read pull request #$PR_NUMBER of nocobase/nocobase3-pro: $(jq -r '.message // empty' <<<"${answer:-}" 2>/dev/null || true)"
+            exit 1
+          }
+          jq '{title: (.title // ""), body: (.body // "")}' <<<"$answer" > "$RUNNER_TEMP/pull-request.json"
+          head_ref=$(jq -r '.head.ref' <<<"$answer")
+          if [[ "$head_ref" =~ ^(release-beta/|release/|chore/promote-|chore/sync-) ]]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Revoke the pull request read token
+        if: ${{ always() && steps.app-token.outputs.token != '' }}
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --location \
+            --request DELETE \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $APP_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+
+      - name: Check out the check script
+        if: ${{ steps.pull-request.outputs.release == 'false' }}
+        uses: actions/checkout@v4
+        with:
+          repository: nocobase/nocobase
+          ref: v3-develop
+          persist-credentials: false
+          sparse-checkout: scripts
+          path: nocobase
+
+      - name: Set up Node.js
+        if: ${{ steps.pull-request.outputs.release == 'false' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check the pull request description
+        if: ${{ steps.pull-request.outputs.release == 'false' }}
+        run: node nocobase/scripts/check-pr-body.mjs --no-module "$RUNNER_TEMP/pull-request.json"
+
+      - name: Skip a release pull request
+        if: ${{ steps.pull-request.outputs.release == 'true' }}
+        run: echo 'A pull request opened by a release workflow carries only versions and changelogs; its description is not checked.'
