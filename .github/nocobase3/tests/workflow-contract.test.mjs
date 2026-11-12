@@ -35,6 +35,7 @@ const expectedJobs = [
   'quality',
   'Validate and advise',
   'Reject prerelease state',
+  'PR description',
 ];
 
 test('keeps the workflow dispatch and run-name contract', () => {
@@ -71,6 +72,10 @@ test('keeps the check job names and branch conditions', () => {
     workflow,
     /name: Reject prerelease state\n    if: \$\{\{ inputs\.event_name == 'pull_request' && inputs\.target_branch == 'main' \}\}/u,
   );
+  assert.match(
+    workflow,
+    /name: PR description\n    if: \$\{\{ inputs\.event_name == 'pull_request' && \(inputs\.target_branch == 'main' \|\| inputs\.target_branch == 'develop'\) \}\}/u,
+  );
 });
 
 test('runs each Pro database integration suite in its own job and gates quality on their summary', () => {
@@ -100,7 +105,14 @@ test('keeps source access read-only and revokes the token before source code run
   assert.match(checkout, /  repository:\n    description: .+\n    default: nocobase3-pro\n/u);
   assert.match(checkout, /repositories: \$\{\{ inputs\.repository \}\}/u);
   assert.match(checkout, /repository: nocobase\/\$\{\{ inputs\.repository \}\}/u);
-  assert.doesNotMatch(workflow, /^\s+repository: /mu);
+  // The only repository the workflow names itself is the public nocobase/nocobase, for the PR description check's
+  // script; every Pro source checkout goes through the checkout action.
+  const prDescription = workflow.slice(workflow.indexOf('  pr-description:\n'));
+  assert.deepEqual(
+    [...workflow.matchAll(/^\s+repository: (.+)$/gmu)].map((match) => match[1]),
+    ['nocobase/nocobase'],
+  );
+  assert.match(prDescription, /^\s+repository: nocobase\/nocobase$/mu);
   assert.match(checkout, /permission-contents: read/u);
   assert.match(checkout, /persist-credentials: false/u);
   assert.match(checkout, /skip-token-revoke: true/u);
@@ -111,6 +123,17 @@ test('keeps source access read-only and revokes the token before source code run
   assert.match(
     checkout.slice(revoke),
     /if: \$\{\{ always\(\) && steps\.app-token\.outputs\.token != '' \}\}/u,
+  );
+
+  // The PR description check's token reads only nocobase3-pro's pull requests, and is revoked before the check runs.
+  assert.match(
+    prDescription,
+    /repositories: nocobase3-pro\n          permission-pull-requests: read\n          skip-token-revoke: true/u,
+  );
+  assert.doesNotMatch(prDescription, /permission-contents/u);
+  assert.ok(
+    prDescription.indexOf('- name: Revoke the pull request read token') <
+      prDescription.indexOf('- name: Check the pull request description'),
   );
 
   const firstSourceCommand = workflow.indexOf('      - name: Set up Node.js');
