@@ -5,7 +5,8 @@ run-name: studio-image:${{ inputs.ref }}:${{ inputs.edition || 'studio-ee' }}${{
 # and pushes it to the internal registry as one image for linux/amd64 and linux/arm64: each platform builds its own
 # dist/ and image in parallel, and a last job tags both under one multi-platform manifest. Studio is the repository root
 # and the framework is the public submodule vendor/nocobase3; nb-studio's brand package is packages/studio-cli. Studio's
-# long-lived branches mirror nocobase/nocobase's: `dev` tracks `v3-develop` and `main` tracks `v3-main`. Studio's,
+# long-lived branches mirror nocobase/nocobase's: `dev` tracks `v3` (formerly `v3-develop`) and `main` tracks
+# `v3-main`. Studio's,
 # nb-studio's (`@nocobase/studio-cli`) and the runner's (`@nocobase/agent-runner`, in the submodule) versions are first
 # stamped `<version>.dev.<UTC timestamp>` (`<version>-dev.<timestamp>` without a prerelease part), so runners and CLIs
 # see the build as newer and upgrade. Studio's own `pnpm build` then packs the universal `nb-studio` and

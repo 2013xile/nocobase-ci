@@ -9,8 +9,11 @@ const migratedRemotes = new Set([
   'ssh://git@github.com/nocobase/nocobase.git',
 ]);
 
-export function frameworkBranch(remote, targetBranch) {
-  return `${migratedRemotes.has(remote) ? 'v3-' : ''}${targetBranch === 'main' ? 'main' : 'develop'}`;
+// The framework branches a Pro target may track, preferred first. nocobase/nocobase is renaming v3-develop to v3, so
+// until the rename settles either name may be the one that exists.
+export function frameworkBranches(remote, targetBranch) {
+  if (!migratedRemotes.has(remote)) return [targetBranch === 'main' ? 'main' : 'develop'];
+  return targetBranch === 'main' ? ['v3-main'] : ['v3', 'v3-develop'];
 }
 
 export function checkFrameworkPointer(directory, targetBranch) {
@@ -22,8 +25,9 @@ export function checkFrameworkPointer(directory, targetBranch) {
   } catch {
     // The original source-owned script handles an uninitialized submodule.
   }
-  const branch = frameworkBranch(remote, targetBranch);
+  const branches = frameworkBranches(remote, targetBranch);
   if (!migratedRemotes.has(remote)) {
+    const [branch] = branches;
     execFileSync(process.execPath, ['./scripts/pin-submodule.mjs', '--check', '--branch', branch], {
       cwd: directory,
       stdio: 'inherit',
@@ -35,6 +39,9 @@ export function checkFrameworkPointer(directory, targetBranch) {
   const match = /^160000 commit ([0-9a-f]{40})\tvendor\/nocobase3$/u.exec(entry);
   if (!match) throw new Error('HEAD must record vendor/nocobase3 as a Git submodule.');
   const pinned = match[1];
+  const existing = git(vendor, ['ls-remote', '--heads', 'origin', ...branches.map((name) => `refs/heads/${name}`)]);
+  const branch = branches.find((name) => existing.split('\n').some((line) => line.endsWith(`\trefs/heads/${name}`)));
+  if (!branch) throw new Error(`None of the framework branches ${branches.join(', ')} exists.`);
   const ref = `refs/remotes/origin/${branch}`;
   git(vendor, ['fetch', '--quiet', 'origin', `+refs/heads/${branch}:${ref}`]);
   if (!git(vendor, ['ls-tree', '-r', '--name-only', ref])) {

@@ -1,10 +1,11 @@
 name: NocoBase 3 preview
 run-name: nocobase3-preview:${{ inputs.request_id }}
 
-# NocoBase 3 pull requests in nocobase/nocobase, dispatched by nocobase-bot (docs/ci-forwarding.md there), whose
-# direct target is v3-develop, v3-main or a single-level <type>/v3-<name> stacked branch. The bot mirrors the job below
-# as a check run of the same name on nocobase/nocobase; the job name is that protocol. It forwards only pull requests
-# from branches of the repository itself, never from forks: the preview runs the pull request's code next to the Studio key.
+# NocoBase 3 pull requests in nocobase/nocobase, dispatched by nocobase-bot (docs/ci-forwarding.md there), whose direct
+# target is v3 (formerly v3-develop), v3-main or a single-level <type>/v3-<name> stacked branch. The bot mirrors the job
+# below as a check run of the same name on nocobase/nocobase; the job name is that protocol. It forwards only pull
+# requests from branches of the repository itself, never from forks: the preview runs the pull request's code next to
+# the Studio key.
 #
 # - `Preview`: the examples template, deployed to `nocobase-v3-pr-<n>`, for `agent/PM-<n>` branches only.
 #
