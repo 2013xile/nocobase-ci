@@ -6,8 +6,9 @@ const ZERO_SHA = '0'.repeat(40);
 const NOCOBASE_STACKED_TARGET_PATTERN = /^[^/]+\/v3-[^/]+$/u;
 // The repositories nocobase-bot forwards; the checkout token is limited to the one named.
 export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase', 'CustomerPortal', 'nocobase-bot', 'v3-pro-registry', 'verdaccio'];
+// v3 is v3-develop renamed; v3-develop stays accepted until the rename settles.
 export const OSS_TARGET_BRANCHES = {
-  nocobase: ['v3-develop', 'v3-main'],
+  nocobase: ['v3', 'v3-develop', 'v3-main'],
 };
 
 export class InputValidationError extends Error {

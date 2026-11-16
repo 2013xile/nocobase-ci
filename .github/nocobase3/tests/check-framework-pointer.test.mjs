@@ -4,20 +4,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { checkFrameworkPointer, frameworkBranch } from '../check-framework-pointer.mjs';
+import { checkFrameworkPointer, frameworkBranches } from '../check-framework-pointer.mjs';
 
 test('maps Pro branch names according to the actual framework repository', () => {
   for (const [remote, expected] of [
-    ['https://github.com/nocobase/nocobase3.git', ['main', 'develop']],
-    ['https://github.com/nocobase/nocobase.git', ['v3-main', 'v3-develop']],
-    ['git@github.com:nocobase/nocobase.git', ['v3-main', 'v3-develop']],
+    ['https://github.com/nocobase/nocobase3.git', [['main'], ['develop']]],
+    ['https://github.com/nocobase/nocobase.git', [['v3-main'], ['v3', 'v3-develop']]],
+    ['git@github.com:nocobase/nocobase.git', [['v3-main'], ['v3', 'v3-develop']]],
   ]) {
-    assert.equal(frameworkBranch(remote, 'main'), expected[0]);
-    assert.equal(frameworkBranch(remote, 'develop'), expected[1]);
+    assert.deepEqual(frameworkBranches(remote, 'main'), expected[0]);
+    assert.deepEqual(frameworkBranches(remote, 'develop'), expected[1]);
   }
-  assert.equal(frameworkBranch('https://github.com/nocobase/nocobase.git', 'feature/foo'), 'v3-develop');
-  assert.equal(frameworkBranch('https://github.com/nocobase/nocobase3.git', 'release/test'), 'develop');
-  assert.equal(frameworkBranch('https://example.com/fork.git', 'main'), 'main');
+  assert.deepEqual(frameworkBranches('https://github.com/nocobase/nocobase.git', 'feature/foo'), ['v3', 'v3-develop']);
+  assert.deepEqual(frameworkBranches('https://github.com/nocobase/nocobase3.git', 'release/test'), ['develop']);
+  assert.deepEqual(frameworkBranches('https://example.com/fork.git', 'main'), ['main']);
 });
 
 function fixture(t) {
@@ -89,6 +89,18 @@ test('rejects an empty migrated target branch as the original pointer check does
   const emptyCommit = f.git(f.upstream, 'commit-tree', emptyTree, '-m', 'empty stable');
   f.git(f.upstream, 'update-ref', 'refs/heads/v3-main', emptyCommit);
   assert.throws(() => checkFrameworkPointer(f.pro, 'main'), /empty/u);
+});
+
+test('follows the v3-develop to v3 rename, preferring v3 while both exist', (t) => {
+  const f = fixture(t);
+  f.pin(f.base);
+  f.git(f.upstream, 'branch', '-m', 'v3-develop', 'v3');
+  assert.deepEqual(checkFrameworkPointer(f.pro, 'develop'), { branch: 'v3', pinned: f.base });
+  assert.deepEqual(checkFrameworkPointer(f.pro, 'main'), { branch: 'v3-main', pinned: f.base });
+  f.git(f.upstream, 'branch', 'v3-develop', f.v2);
+  assert.deepEqual(checkFrameworkPointer(f.pro, 'develop'), { branch: 'v3', pinned: f.base });
+  for (const name of ['v3', 'v3-develop']) f.git(f.upstream, 'update-ref', '-d', `refs/heads/${name}`);
+  assert.throws(() => checkFrameworkPointer(f.pro, 'develop'), /None of the framework branches v3, v3-develop exists/u);
 });
 
 test('delegates unchanged legacy targets to the original source-owned checker', (t) => {

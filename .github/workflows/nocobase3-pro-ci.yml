@@ -608,10 +608,11 @@ jobs:
           echo 'No prerelease versions found'
 
   # Checks the pull request's description against nocobase3-pro's .github/pull_request_template.md with
-  # nocobase/nocobase's scripts/check-pr-body.mjs from v3-develop, run with `--no-module`. No source code is checked
-  # out or run: a token that can only read nocobase3-pro's pull requests reads the current title and body and is revoked
-  # before the check runs. Editing the description does not dispatch a new run: re-run this check afterwards. Pull
-  # requests opened by the release workflows carry only versions and changelogs and pass without a check.
+  # nocobase/nocobase's scripts/check-pr-body.mjs from its default branch (v3, formerly v3-develop), run with
+  # `--no-module`. No source code is checked out or run: a token that can only read nocobase3-pro's pull requests
+  # reads the current title and body and is revoked before the check runs. Editing the description does not dispatch a
+  # new run: re-run this check afterwards. Pull requests opened by the release workflows carry only versions and
+  # changelogs and pass without a check.
   pr-description:
     name: PR description
     if: ${{ inputs.event_name == 'pull_request' && (inputs.target_branch == 'main' || inputs.target_branch == 'develop') }}
@@ -688,7 +689,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nocobase/nocobase
-          ref: v3-develop
           persist-credentials: false
           sparse-checkout: scripts
           path: nocobase

@@ -88,7 +88,7 @@ test('gives main its own moving tag, so it never replaces dev', () => {
 });
 
 test('tags a build of any other ref dev-<short sha> alone, so it moves neither dev nor main', () => {
-  for (const ref of ['feat/anything', 'agent/PM-42', 'v3-develop', 'main-backup', 'dev-1', '0123abc']) {
+  for (const ref of ['feat/anything', 'agent/PM-42', 'v3', 'v3-develop', 'main-backup', 'dev-1', '0123abc']) {
     const { status, tags } = nameTags({ ref });
     assert.equal(status, 0);
     assert.deepEqual(tags, [`dev-${sha}`], ref);

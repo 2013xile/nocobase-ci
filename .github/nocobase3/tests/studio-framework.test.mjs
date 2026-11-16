@@ -105,6 +105,7 @@ function run(context, source, headRef, pulls) {
   );
   return {
     status: result.status,
+    stdout: result.stdout,
     stderr: result.stderr,
     outputs,
     summary: readFileSync(summary, 'utf8'),
@@ -149,6 +150,7 @@ test('keeps the committed pointer without a same-name branch, for a push, a long
       ['agent/PM-9', '', /has no branch `agent\/PM-9`/u],
       ['', '', /No pull request head branch/u],
       ['v3-develop', '', /long-lived branch name/u],
+      ['v3', '', /long-lived branch name/u],
       ['main', '', /long-lived branch name/u],
       ['agent/PM-1', `42 closed merged ${context.squash}`, /nocobase\/nocobase#42 \(`agent\/PM-1`\) has merged/u],
       ['agent/PM-1', '41 closed unmerged -', /closed without merging/u],
@@ -190,6 +192,7 @@ test('the gate passes a push, a long-lived name, an unpaired branch and a change
     for (const [headRef, pulls, message] of [
       ['', '', /a push/u],
       ['main', '', /long-lived branch name/u],
+      ['v3', '', /long-lived branch name/u],
       ['agent/PM-9', '', /has no branch or pull request `agent\/PM-9`/u],
       ['agent/PM-1', '41 closed unmerged -', /closed without merging/u],
     ]) {
@@ -241,6 +244,35 @@ test('the gate fails on a merged framework half until the pointer contains its m
     const bumped = check(context, 'agent/PM-1', pulls);
     assert.equal(bumped.status, 0, bumped.stderr);
     assert.match(bumped.summary, /contains nocobase\/nocobase#5/u);
+  } finally {
+    rmSync(context.dir, { recursive: true, force: true });
+  }
+});
+
+test('the gate fetches v3 or v3-develop, whichever nocobase/nocobase has, and fails without either', () => {
+  const context = fixture();
+  try {
+    // nocobase/nocobase renames v3-develop to v3; the squash merge lands on v3.
+    context.git(context.pub, 'branch', '-q', '-m', 'v3-develop', 'v3');
+    context.git(context.pub, 'merge', '-q', '--ff-only', 'squash');
+    const pulls = `5 closed merged ${context.squash}`;
+    const stale = check(context, 'agent/PM-1', pulls);
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.summary, /does not contain it/u);
+
+    const vendor = path.join(context.studio, 'vendor/nocobase3');
+    context.git(vendor, 'fetch', '-q', 'origin');
+    context.git(vendor, 'checkout', '-q', context.squash);
+    context.git(context.studio, 'commit', '-q', '-am', 'bump');
+    const bumped = check(context, 'agent/PM-1', pulls);
+    assert.equal(bumped.status, 0, bumped.stderr);
+    assert.match(bumped.summary, /contains nocobase\/nocobase#5/u);
+
+    context.git(context.pub, 'checkout', '-q', 'v3-main');
+    context.git(context.pub, 'branch', '-q', '-D', 'v3');
+    const missing = check(context, 'agent/PM-1', pulls);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stdout, /::error::nocobase\/nocobase has neither a v3 nor a v3-develop branch/u);
   } finally {
     rmSync(context.dir, { recursive: true, force: true });
   }

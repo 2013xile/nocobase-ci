@@ -441,7 +441,7 @@ jobs:
         if: ${{ steps.merge.outputs.merged == 'false' }}
         run: exit 1
 
-  # One card for every real release, whichever job ended it. The script is nocobase/nocobase's, read from that public repository without a credential.
+  # One card for every real release, whichever job ended it. The script is nocobase/nocobase's, read from that public repository's default branch (v3, formerly v3-develop) without a credential.
   notify:
     name: Notify Feishu
     needs: [prepare, deploy, release]
@@ -453,7 +453,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nocobase/nocobase
-          ref: v3-develop
           sparse-checkout: scripts/feishu-notify.sh
           sparse-checkout-cone-mode: false
           path: nocobase-scripts

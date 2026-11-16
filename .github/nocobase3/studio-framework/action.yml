@@ -53,7 +53,7 @@ runs:
           '')
             reason='No pull request head branch (a push).'
             ;;
-          main | dev | develop | next | v3-develop | v3-main)
+          main | dev | develop | next | v3 | v3-develop | v3-main)
             reason="\`$HEAD_REF\` is a long-lived branch name, never paired with a framework branch."
             ;;
           *)
