@@ -53,7 +53,7 @@ test('checks out only nocobase/studio through the shared checkout action', () =>
 });
 
 test('gives the deployment secret only to the preview', () => {
-  assert.doesNotMatch(job('dist'), /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY)/u);
+  assert.doesNotMatch(job('dist'), /secrets\.(?!NOCOBASE_APP_PRIVATE_KEY|PRO_NPM_TOKEN)/u);
   assert.doesNotMatch(workflow, /\bssh\b/u);
   assert.doesNotMatch(workflow, /^ {6}NB_STUDIO_API_KEY:/mu);
 });
@@ -90,9 +90,9 @@ test("runs Studio's own scripts with the repository's pnpm, after a full install
   // The committed pointer installs from the lockfile; a same-name framework branch may need it resolved again.
   assert.match(
     job('preview'),
-    /working-directory: studio\n        env:\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
+    /working-directory: studio\n        env:\n          NPM_CONFIG_USERCONFIG: \$\{\{ runner\.temp \}\}\/studio-npmrc\n          INSTALL_FLAG: \$\{\{ steps\.framework\.outputs\.install-flag \}\}\n        run: pnpm install "\$INSTALL_FLAG"\n/u,
   );
-  assert.match(job('dist'), /working-directory: studio\n        run: pnpm install --frozen-lockfile\n/u);
+  assert.match(job('dist'), /working-directory: studio\n        env:\n          NPM_CONFIG_USERCONFIG: \$\{\{ runner\.temp \}\}\/studio-npmrc\n        run: pnpm install --frozen-lockfile\n/u);
 });
 
 test('packs the per-platform Node.js under RUNNER_TEMP, on the workspace disk', () => {

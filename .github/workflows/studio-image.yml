@@ -211,6 +211,20 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Configure private npm read access
+        env:
+          PRO_NPM_TOKEN: ${{ secrets.PRO_NPM_TOKEN }}
+        run: |
+          if [ -z "$PRO_NPM_TOKEN" ]; then
+            echo "::error::PRO_NPM_TOKEN must grant read access to pkg-v3.nocobase.com."
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' \
+            '@nocobase:registry=https://pkg-v3.nocobase.com/' \
+            "//pkg-v3.nocobase.com/:_authToken=$PRO_NPM_TOKEN" \
+            > "$RUNNER_TEMP/studio-npmrc"
+
       # build:image installs the frozen graph in an isolated checkout, stamps all served packages there,
       # selects EE and checks the final artifact. The outer checkout stays at the resolved source revision.
       # Keep temporary packages on the runner's workspace disk to avoid cross-device renames.
@@ -218,6 +232,7 @@ jobs:
         id: build_dist
         env:
           TMPDIR: ${{ runner.temp }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/studio-npmrc
           COMMIT: ${{ needs.prepare.outputs.commit }}
           STAMP: ${{ needs.prepare.outputs.stamp }}
           TARGET: ${{ matrix.target }}
@@ -226,6 +241,10 @@ jobs:
           pnpm build:image --edition "$EDITION" --target "$TARGET" \
             --source-ref "$COMMIT" --dev-stamp "$STAMP" --out "$RUNNER_TEMP/studio-image"
           echo "version=$(jq -r '.version' "$RUNNER_TEMP/studio-image/build-metadata.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Remove private npm credentials
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/studio-npmrc"
 
       - name: Sign in to the registry
         if: ${{ !inputs.dry_run }}
