@@ -111,7 +111,7 @@ The v1/v2 image, plugin publishing and auto-merge workflows are unchanged. No ne
 
 ### Release tags are not branch targets
 
-Keep v3 aggregate tags in `release-beta/*` and `release/*`, and package tags in `@nocobase/<package>@<version>`. They do not match the existing legacy `v*` triggers. None of the workflows here subscribes to tag pushes. The bot must keep tag events separate from branch dispatches; no additional tag or branch guards are introduced into the existing v1/v2 workflows here.
+Keep v3 aggregate tags in `nocobase-v3-beta/*` (Beta) and `nocobase-v3/*` (stable), and package tags in `@nocobase/<package>@<version>`. `release-beta/*` and `release/*` remain the aggregate tag names of Pro, and of the main repository's earlier v3 releases. None of these match the existing legacy `v*` triggers. None of the workflows here subscribes to tag pushes. The bot must keep tag events separate from branch dispatches; no additional tag or branch guards are introduced into the existing v1/v2 workflows here.
 
 The main repository's `release.yml` and `changelog-and-release.yml` tag triggers live outside this repository. Tag-push workflows are read from the tagged commit, not indiscriminately from the default branch. When migrating the main repository, keep those workflows out of the independent v3 code tree, retain disjoint tag names, and add a v2-lineage guard to both automatic and manual legacy release entry points before any publishing token or job: the selected tag must resolve to a commit reachable from an approved legacy release branch. A version number alone cannot identify the code line, because the legacy history already has `v3.0.0-alpha.*` tags. These shared-CI changes do not implement or replace that source-repository guard.
 
