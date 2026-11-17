@@ -24,7 +24,7 @@ Logs are public by design, but the workflow does not upload source, packages, lo
 - Pushes to `dev` and `main`: `Dist` builds the per-platform `nb-studio` and `nocobase-runner` tarballs as a check and keeps them as artifacts for three days; both are public. They are not delivered anywhere.
 - Nothing is cached, and no source or application build is uploaded.
 
-Studio's other checks, `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document`, `CLI reference` and `Studio e2e`, need no secret and run in `studio-quality.yml` of the CI repository pool (`chenos/nocobase-ci` and its copies), which checks Studio out with a read-only token `nocobase-bot` hands each job for its OIDC token. That repository carries copies of `validate-inputs.mjs`, `prepare-snapshot.mjs`, `mirror-workspace.mjs`, `studio-framework` and `studio-framework-gate`; change both together.
+Studio's other checks, `Submodule pointer`, `Lint`, `Typecheck`, `Test`, `API document`, `CLI reference` and `Studio e2e`, need only private package read access and run in `studio-quality.yml` of the CI repository pool (`chenos/nocobase-ci` and its copies), which checks Studio out with a read-only token `nocobase-bot` hands each job for its OIDC token. That repository carries copies of `validate-inputs.mjs`, `prepare-snapshot.mjs`, `mirror-workspace.mjs`, `studio-framework` and `studio-framework-gate`; change both together.
 
 ## NocoBase Studio image
 
@@ -135,3 +135,7 @@ go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color=false .github/wo
 ### Testing source ownership
 
 The testing capability is now maintained inside the private Studio repository. Use normal Studio pull request previews and image builds. Historical isolated QA preview Apps and their fixed two-repository builds remain historical evidence; they are not the ongoing delivery path. The standalone private plugin repository is not a build dependency.
+
+## Studio private packages
+
+Studio image, preview and distribution builds require `PRO_NPM_TOKEN` with read access to `https://pkg-v3.nocobase.com/` in this repository. Each job writes a temporary user npmrc with mode 0600, gives its path to dependency installation and build steps through `NPM_CONFIG_USERCONFIG`, and deletes it even after failures. The isolated edition build inherits that path. Package authentication is separate from Docker registry login and never belongs in the published image or artifacts. The quality CI pool needs the same read access in each repository that runs its workflow; repository secrets are not shared.
