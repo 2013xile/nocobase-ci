@@ -7,7 +7,8 @@ import path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 
 const [image, edition] = process.argv.slice(2);
-assert.ok(image && ['studio', 'studio-ee'].includes(edition));
+const editions = { studio: 'pro', 'studio-ee': 'enterprise', 'studio-ce': 'community' };
+assert.ok(image && Object.hasOwn(editions, edition));
 const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', timeout: 180_000 }).trim();
 const directory = await mkdtemp(path.join(os.tmpdir(), 'studio-image-smoke-'));
 const name = `studio-edition-smoke-${randomBytes(6).toString('hex')}`;
@@ -24,7 +25,7 @@ try {
     jobs: { default: 'memory' }, queue: { default: 'memory' },
     logging: { level: 'error' },
   }), { mode: 0o644 });
-  docker('run', '-d', '--name', name, '--init', '-e', 'NB_STUDIO_E2E=1', '-p', '127.0.0.1::13000',
+  docker('run', '-d', '--name', name, '--init', ...(edition === 'studio-ce' ? [] : ['-e', 'NB_STUDIO_E2E=1']), '-p', '127.0.0.1::13000',
     '--mount', `type=bind,source=${directory}/config.yml,target=/app/config.yml,readonly`, image);
   const port = docker('port', name, '13000/tcp').split(':').at(-1);
   const base = `http://127.0.0.1:${port}/main/api`;
@@ -45,7 +46,7 @@ try {
   });
   assert.equal(login.status, 200, 'Administrator sign-in');
   const cookie = login.headers.getSetCookie().map((part) => part.split(';')[0]).join('; ');
-  for (const [endpoint, status] of [['projects', 200], ['quality/projects', edition === 'studio' ? 404 : 200], ['swagger', 200]]) {
+  for (const [endpoint, status] of [['projects', 200], ['quality/projects', edition === 'studio-ee' ? 200 : 404], ['swagger', 200]]) {
     const response = await fetch(`${base}/${endpoint}`, { headers: { cookie }, signal: AbortSignal.timeout(30_000) });
     assert.equal(response.status, status, endpoint);
     if (endpoint === 'swagger') {
@@ -53,11 +54,18 @@ try {
       assert.equal(Object.keys(document.paths).some((key) => /\/quality(?:\/|$)/.test(key)), edition === 'studio-ee');
     }
   }
+  if (edition === 'studio-ce') {
+    for (const endpoint of ['studioLicense', 'studioLicense/npmToken', 'issueRequesters/pending']) {
+      const response = await fetch(`${base}/${endpoint}`, { headers: { cookie }, signal: AbortSignal.timeout(30_000) });
+      assert.equal(response.status, 404, endpoint);
+    }
+  }
   const identity = JSON.parse(docker('exec', '--workdir', '/app/dist', name, 'node', '--input-type=module', '-e', `
-    import { readFileSync } from 'node:fs';
+    import { existsSync, readFileSync } from 'node:fs';
     import { ServiceContainer } from '@nocobase/service-provider';
     import Provider from '/app/dist/server/providers/edition.js';
-    import { studioEditionToken } from '/app/dist/server/edition-service.js';
+    const legacy = '/app/dist/server/edition-service.js';
+    const { studioEditionToken } = await import(existsSync(legacy) ? legacy : '@nocobase/studio-services');
     const container = new ServiceContainer();
     new Provider({ container, paths: { root: (file) => '/app/dist/' + file } }).register();
     const info = container.resolve(studioEditionToken);
@@ -66,7 +74,7 @@ try {
     console.log(JSON.stringify(info));
   `));
   assert.equal(identity.image, edition);
-  assert.equal(identity.edition, edition === 'studio' ? 'pro' : 'enterprise');
+  assert.equal(identity.edition, editions[edition]);
   console.log(JSON.stringify({ image, ...identity, health: true, login: true, projects: true, qualityIsolation: true }));
 } catch (error) {
   try {
