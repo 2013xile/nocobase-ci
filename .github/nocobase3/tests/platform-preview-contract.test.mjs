@@ -51,6 +51,10 @@ test('application code runs only in a container with narrowly enumerated mounts 
   assert.match(build, /--cap-drop ALL --security-opt no-new-privileges --pids-limit 512/u);
   assert.match(build, /node:24-bookworm/u);
   assert.match(build, /pnpm install --frozen-lockfile/u);
+  assert.ok(build.includes('--user "$(id -u):$(id -g)"'));
+  assert.ok(build.includes('--env HOME=/tmp/platform-home'));
+  assert.ok(build.includes('npm install --global --prefix /tmp/platform-tools pnpm@11.11.0'));
+  assert.ok(build.includes('export PATH="/tmp/platform-tools/bin:$PATH"'));
   assert.match(build, /pnpm build --target linux-x64 --node-version 24 --tar/u);
   assert.equal((build.match(/--mount /gu) ?? []).length, 3);
   assert.match(build, /dst=\/workspace\/\.git,readonly/u);
@@ -59,7 +63,7 @@ test('application code runs only in a container with narrowly enumerated mounts 
     build,
     /--privileged|--pid(?:=|\s)|--network.?host|docker.sock|NB_STUDIO|GITHUB_ENV|GITHUB_OUTPUT|PRIVATE_KEY/u,
   );
-  assert.equal((build.match(/--env /gu) ?? []).length, 3);
+  assert.equal((build.match(/--env /gu) ?? []).length, 4);
   assert.ok(
     workflow.indexOf('Build inside an isolated container') <
       workflow.indexOf('Create a fresh pre-deployment read token'),
