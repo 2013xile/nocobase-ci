@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-const workflow = readFileSync(new URL('../../workflows/multi-tenant-platform-preview.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(
+  new URL('../../workflows/multi-tenant-platform-preview.yml', import.meta.url),
+  'utf8',
+);
 
 test('keeps the Bot dispatch protocol, platform identity and PR-only boundary', () => {
   assert.match(workflow, /^run-name: multi-tenant-platform-preview:\$\{\{ inputs.request_id \}\}$/mu);
@@ -22,6 +25,7 @@ test('waits for source checks before rebuilding, and does not publish private ar
   const steps = [
     'Wait for the platform quality checks',
     'Revoke the gate token',
+    'Prepare the non-root build image',
     'Check out the verified platform head',
     'Build inside an isolated container',
     'Stage the archive',
@@ -49,7 +53,8 @@ test('application code runs only in a container with narrowly enumerated mounts 
   );
   assert.match(build, /docker run --rm --init/u);
   assert.match(build, /--cap-drop ALL --security-opt no-new-privileges --pids-limit 512/u);
-  assert.match(build, /node:24-bookworm/u);
+  assert.match(build, /"\$BUILD_IMAGE" bash -euo pipefail/u);
+  assert.ok(build.includes('require(\\"node:os\\").userInfo()'));
   assert.match(build, /pnpm install --frozen-lockfile/u);
   assert.ok(build.includes('--user "$(id -u):$(id -g)"'));
   assert.ok(build.includes('--env HOME=/tmp/platform-home'));
@@ -72,6 +77,32 @@ test('application code runs only in a container with narrowly enumerated mounts 
   assert.match(workflow, /steps\.deployment-token\.outputs\.token/u);
   assert.match(workflow, /Revoke the pre-deployment token/u);
   assert.match(workflow, /always\(\).*\n        run: \|\n          docker rm -f/u);
+});
+
+test('prepares a real non-root account without application data in the image', () => {
+  assert.match(
+    workflow,
+    /BUILD_IMAGE: platform-build:\$\{\{ github.run_id \}\}-\$\{\{ github.run_attempt \}\}/u,
+  );
+  const preparation = workflow.slice(
+    workflow.indexOf('      - name: Prepare the non-root build image'),
+    workflow.indexOf('      - name: Report the pending build'),
+  );
+  assert.ok(preparation.includes('--build-arg "BUILD_UID=$(id -u)"'));
+  assert.ok(preparation.includes('--build-arg "BUILD_GID=$(id -g)"'));
+  assert.match(preparation, /--tag "\$BUILD_IMAGE" \.github\/nocobase3\/platform-build/u);
+  assert.doesNotMatch(preparation, /platform-npmrc|--secret|--ssh|NB_STUDIO|PRO_NPM_TOKEN/u);
+  assert.match(workflow, /docker image rm "\$BUILD_IMAGE"/u);
+  const dockerfile = readFileSync(new URL('../platform-build/Dockerfile', import.meta.url), 'utf8');
+  assert.match(dockerfile, /^FROM node:24-bookworm$/mu);
+  assert.match(dockerfile, /test "\$BUILD_UID" -gt 0/u);
+  assert.match(dockerfile, /test "\$BUILD_GID" -gt 0/u);
+  assert.match(dockerfile, /getent group "\$BUILD_GID"/u);
+  assert.match(dockerfile, /getent passwd "\$BUILD_UID"/u);
+  assert.match(dockerfile, /useradd --uid "\$BUILD_UID" --gid "\$BUILD_GID"/u);
+  assert.match(dockerfile, /usermod --gid "\$BUILD_GID"/u);
+  assert.match(dockerfile, /^USER \$\{BUILD_UID\}:\$\{BUILD_GID\}$/mu);
+  assert.doesNotMatch(dockerfile, /^\s*(?:COPY|ADD)\b|curl|wget|npm install/mu);
 });
 
 test('all multiline shell scripts parse without executing any build or deployment', () => {

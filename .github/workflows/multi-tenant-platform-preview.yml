@@ -56,6 +56,7 @@ jobs:
       ENVIRONMENT: preview
       LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       BUILD_CONTAINER: platform-build-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILD_IMAGE: platform-build:${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -119,6 +120,13 @@ jobs:
             --header "Authorization: Bearer $SOURCE_READ_TOKEN" \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             https://api.github.com/installation/token
+      # Build only the trusted identity setup before checking out private application code.
+      - name: Prepare the non-root build image
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        run: |
+          docker build --file .github/nocobase3/platform-build/Dockerfile \
+            --build-arg "BUILD_UID=$(id -u)" --build-arg "BUILD_GID=$(id -g)" \
+            --tag "$BUILD_IMAGE" .github/nocobase3/platform-build
       - name: Report the pending build
         if: ${{ steps.gate.outputs.skip == 'false' }}
         env:
@@ -165,7 +173,8 @@ jobs:
             --env NODE_OPTIONS=--max-old-space-size=6144 \
             --env CI=true \
             --env HOME=/tmp/platform-home \
-            node:24-bookworm bash -euo pipefail -c '
+            "$BUILD_IMAGE" bash -euo pipefail -c '
+              node -e "require(\"node:os\").userInfo()"
               node -e "if (JSON.parse(require(\"fs\").readFileSync(\"package.json\", \"utf8\")).packageManager !== \"pnpm@11.11.0\") process.exit(1)"
               mkdir -p "$HOME"
               npm install --global --prefix /tmp/platform-tools pnpm@11.11.0
@@ -223,5 +232,6 @@ jobs:
         if: ${{ always() }}
         run: |
           docker rm -f "$BUILD_CONTAINER" >/dev/null 2>&1 || true
+          docker image rm "$BUILD_IMAGE" >/dev/null 2>&1 || true
           rm -f "$RUNNER_TEMP/platform-npmrc"
           rm -rf "$NB_STUDIO_HOME" "$RUNNER_TEMP/platform-deploy"
