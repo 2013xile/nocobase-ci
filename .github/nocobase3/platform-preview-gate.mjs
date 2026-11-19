@@ -92,7 +92,7 @@ export async function waitForPlatformChecks({
   throw new Error('Platform quality checks did not pass before the gate deadline; nothing will be deployed.');
 }
 
-/** Recheck current source state after the container build, not only before its potentially long execution. */
+/** Recheck current source state after the archive build, not only before its potentially long execution. */
 export async function verifyPlatformDeployment(options) {
   const result = await waitForPlatformChecks({ ...options, timeoutMs: 60_000 });
   if (result.skip) throw new Error('The PR no longer permits a Preview deployment.');

@@ -145,7 +145,7 @@ test('reads all check pages rather than silently accepting a partial response', 
   assert.deepEqual(pages, [1, 2]);
 });
 
-test('the pre-deployment recheck refuses a closed, changed or newly skipped PR after the container build', async () => {
+test('rechecks closed, changed and newly skipped PRs after building', async () => {
   for (const current of [
     pull(),
     { ...pull(), state: 'closed' },
