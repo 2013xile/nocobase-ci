@@ -139,3 +139,7 @@ The testing capability is now maintained inside the private Studio repository. U
 ## Studio private packages
 
 Studio image, preview and distribution builds require `PRO_NPM_TOKEN` with read access to `https://pkg-v3.nocobase.com/` in this repository. Each job writes a temporary user npmrc with mode 0600, gives its path to dependency installation and build steps through `NPM_CONFIG_USERCONFIG`, and deletes it even after failures. The isolated edition build inherits that path. Package authentication is separate from Docker registry login and never belongs in the published image or artifacts. The quality CI pool needs the same read access in each repository that runs its workflow; repository secrets are not shared.
+
+## Multi-tenant platform
+
+See [the platform CI integration](platform-ci.md) for workflow ownership, credential boundaries, rollout and scoped verification. The child application is not part of this integration.

@@ -5,7 +5,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/iu;
 const ZERO_SHA = '0'.repeat(40);
 const NOCOBASE_STACKED_TARGET_PATTERN = /^[^/]+\/v3-[^/]+$/u;
 // The repositories nocobase-bot forwards; the checkout token is limited to the one named.
-export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase', 'CustomerPortal', 'nocobase-bot', 'v3-pro-registry', 'verdaccio'];
+export const SOURCE_REPOSITORIES = ['nocobase3-pro', 'studio', 'nocobase3', 'nocobase', 'CustomerPortal', 'nocobase-bot', 'v3-pro-registry', 'verdaccio', 'multi-tenant-platform-app'];
 // v3 is v3-develop renamed; v3-develop stays accepted until the rename settles.
 export const OSS_TARGET_BRANCHES = {
   nocobase: ['v3', 'v3-develop', 'v3-main'],
@@ -52,6 +52,9 @@ export function validateInputs(input) {
   }
   if (!['true', 'false'].includes(input.skipLabel)) {
     reject('skip_label must be true or false.');
+  }
+  if (input.repository === 'multi-tenant-platform-app' && input.targetBranch !== 'main') {
+    reject('target_branch for multi-tenant-platform-app must be main.');
   }
   const targets = OSS_TARGET_BRANCHES[input.repository];
   if (

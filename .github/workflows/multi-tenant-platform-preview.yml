@@ -1,0 +1,223 @@
+name: Multi-tenant platform preview
+# This prefix and the Preview job name are the nocobase-bot reporting protocol.
+run-name: multi-tenant-platform-preview:${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Bot request UUID.
+        required: true
+        type: string
+      event_name:
+        description: Source pull_request or push.
+        required: true
+        type: string
+      head_sha:
+        description: Immutable platform head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable platform base SHA.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch, main.
+        required: true
+        type: string
+      pr_number:
+        description: Source PR number, or zero for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source PR has no-preview.
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: multi-tenant-platform-preview-${{ inputs.request_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  preview:
+    name: Preview
+    if: ${{ inputs.event_name == 'pull_request' && inputs.skip_label != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
+      NB_STUDIO_KEYCHAIN: 'off'
+      SOURCE_REPOSITORY: nocobase/multi-tenant-platform-app
+      HEAD_SHA: ${{ inputs.head_sha }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      APP_ID: multi-tenant-platform-app-pr-${{ inputs.pr_number }}
+      ENVIRONMENT: preview
+      LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      BUILD_CONTAINER: platform-build-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out trusted CI helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+      - name: Validate platform dispatch
+        env:
+          REPOSITORY: multi-tenant-platform-app
+          CHECKOUT_PATH: platform
+          REQUEST_ID: ${{ inputs.request_id }}
+          EVENT_NAME: ${{ inputs.event_name }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          SKIP_LABEL: ${{ inputs.skip_label }}
+        run: node .github/nocobase3/validate-inputs.mjs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Isolate trusted CLI state
+        run: |
+          echo "NB_STUDIO_HOME=$RUNNER_TEMP/platform-studio-home" >> "$GITHUB_ENV"
+          echo "PLATFORM_ARCHIVE=$RUNNER_TEMP/platform-deploy/dist.tar.gz" >> "$GITHUB_ENV"
+      - name: Install and authenticate the trusted Studio CLI
+        id: cli
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NB_STUDIO_SERVER" ] || [ -z "$NB_STUDIO_API_KEY" ]; then
+            echo '::error::Configure NB_STUDIO_URL and MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY.'
+            exit 1
+          fi
+          eval "$(curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER/api/agents/dist/products/nb-studio/targets/linux-x64?format=env")"
+          mkdir -p "$RUNNER_TEMP/platform-cli"
+          curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/platform-cli"
+          echo "$RUNNER_TEMP/platform-cli/bin" >> "$GITHUB_PATH"
+          printf %s "$NB_STUDIO_API_KEY" | "$RUNNER_TEMP/platform-cli/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
+      - name: Create a PR and checks read token
+        id: gate-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: multi-tenant-platform-app
+          permission-pull-requests: read
+          permission-checks: read
+          skip-token-revoke: true
+      - name: Wait for the platform quality checks
+        id: gate
+        env:
+          SOURCE_READ_TOKEN: ${{ steps.gate-token.outputs.token }}
+        run: node .github/nocobase3/platform-preview-gate.mjs
+      - name: Revoke the gate token
+        if: ${{ always() && steps.gate-token.outputs.token != '' }}
+        env:
+          SOURCE_READ_TOKEN: ${{ steps.gate-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --request DELETE \
+            --header "Authorization: Bearer $SOURCE_READ_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+      - name: Report the pending build
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$SOURCE_REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
+      - name: Check out the verified platform head
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        uses: ./.github/nocobase3/checkout
+        with:
+          repository: multi-tenant-platform-app
+          path: platform
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+      - name: Configure read-only package access
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          PRO_NPM_TOKEN: ${{ secrets.PRO_NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$PRO_NPM_TOKEN" || { echo '::error::Configure read-only PRO_NPM_TOKEN.'; exit 1; }
+          umask 077
+          printf '%s\n' '@nocobase:registry=https://pkg-v3.nocobase.com/' "//pkg-v3.nocobase.com/:_authToken=$PRO_NPM_TOKEN" > "$RUNNER_TEMP/platform-npmrc"
+      # Application code never runs on the host. Only its source and read-only npm configuration are mounted;
+      # no Studio/App credential, runner environment file, Docker socket, helper directory or CLI session is visible.
+      - name: Build inside an isolated container
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        run: |
+          timeout 20m docker run --rm --init --name "$BUILD_CONTAINER" \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/platform,dst=/workspace" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/platform/.git,dst=/workspace/.git,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/platform-npmrc,dst=/run/secrets/npmrc,readonly" \
+            --workdir /workspace \
+            --env NPM_CONFIG_USERCONFIG=/run/secrets/npmrc \
+            --env NODE_OPTIONS=--max-old-space-size=6144 \
+            --env CI=true \
+            node:24-bookworm bash -euo pipefail -c '
+              node -e "if (JSON.parse(require(\"fs\").readFileSync(\"package.json\", \"utf8\")).packageManager !== \"pnpm@11.11.0\") process.exit(1)"
+              npm install --global pnpm@11.11.0
+              pnpm install --frozen-lockfile
+              pnpm build --target linux-x64 --node-version 24 --tar
+            '
+      - name: Stage the archive without following application escape links
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          PLATFORM_SOURCE_ROOT: ${{ github.workspace }}/platform
+        run: node .github/nocobase3/stage-platform-archive.mjs
+      - name: Create a fresh pre-deployment read token
+        id: deployment-token
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: multi-tenant-platform-app
+          permission-pull-requests: read
+          permission-checks: read
+          skip-token-revoke: true
+      - name: Recheck the current PR and quality before deployment
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          SOURCE_READ_TOKEN: ${{ steps.deployment-token.outputs.token }}
+        run: node .github/nocobase3/platform-preview-gate.mjs --before-deploy
+      - name: Revoke the pre-deployment token
+        if: ${{ always() && steps.deployment-token.outputs.token != '' }}
+        env:
+          SOURCE_READ_TOKEN: ${{ steps.deployment-token.outputs.token }}
+        run: |
+          curl --fail-with-body --silent --show-error --request DELETE \
+            --header "Authorization: Bearer $SOURCE_READ_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            https://api.github.com/installation/token
+      - name: Ensure the PR application
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
+        run: nb-studio app ensure "$APP_ID" --environment "$ENVIRONMENT" --repository "$SOURCE_REPOSITORY"
+      - name: Deploy the verified head directly to Studio
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
+        run: nb-studio deploy --app "$APP_ID" --repository "$SOURCE_REPOSITORY" --sha "$HEAD_SHA" --file "$PLATFORM_ARCHIVE"
+      - name: Report a failed head
+        if: ${{ failure() && steps.cli.outcome == 'success' }}
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
+        run: nb-studio build status --app "$APP_ID" --repository "$SOURCE_REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
+      - name: Remove the build container and credentials
+        if: ${{ always() }}
+        run: |
+          docker rm -f "$BUILD_CONTAINER" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/platform-npmrc"
+          rm -rf "$NB_STUDIO_HOME" "$RUNNER_TEMP/platform-deploy"
