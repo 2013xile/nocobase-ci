@@ -3,7 +3,17 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-const workflow = readFileSync(new URL('../../workflows/multi-tenant-platform-preview.yml', import.meta.url), 'utf8');
+const workflow = readFileSync(
+  new URL('../../workflows/multi-tenant-platform-preview.yml', import.meta.url),
+  'utf8',
+);
+
+function step(name) {
+  const start = workflow.indexOf(`      - name: ${name}\n`);
+  assert.notEqual(start, -1, `Missing step: ${name}`);
+  const end = workflow.indexOf('\n      - ', start + 1);
+  return workflow.slice(start, end === -1 ? undefined : end);
+}
 
 test('keeps the Bot dispatch protocol, platform identity and PR-only boundary', () => {
   assert.match(workflow, /^run-name: multi-tenant-platform-preview:\$\{\{ inputs.request_id \}\}$/mu);
@@ -23,7 +33,10 @@ test('waits for source checks before rebuilding, and does not publish private ar
     'Wait for the platform quality checks',
     'Revoke the gate token',
     'Check out the verified platform head',
-    'Build inside an isolated container',
+    'Set up pnpm',
+    'Install dependencies',
+    'Build the deployment archive',
+    'Remove private package configuration',
     'Stage the archive',
     'Deploy the verified head',
   ];
@@ -42,36 +55,59 @@ test('waits for source checks before rebuilding, and does not publish private ar
   assert.match(workflow, /secrets\.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY/u);
 });
 
-test('application code runs only in a container with narrowly enumerated mounts and environment', () => {
-  const build = workflow.slice(
-    workflow.indexOf('      - name: Build inside an isolated container'),
-    workflow.indexOf('      - name: Stage the archive'),
-  );
-  assert.match(build, /docker run --rm --init/u);
-  assert.match(build, /--cap-drop ALL --security-opt no-new-privileges --pids-limit 512/u);
-  assert.match(build, /node:24-bookworm/u);
-  assert.match(build, /pnpm install --frozen-lockfile/u);
-  assert.ok(build.includes('--user "$(id -u):$(id -g)"'));
-  assert.ok(build.includes('--env HOME=/tmp/platform-home'));
-  assert.ok(build.includes('npm install --global --prefix /tmp/platform-tools pnpm@11.11.0'));
-  assert.ok(build.includes('export PATH="/tmp/platform-tools/bin:$PATH"'));
-  assert.match(build, /pnpm build --target linux-x64 --node-version 24 --tar/u);
-  assert.equal((build.match(/--mount /gu) ?? []).length, 3);
-  assert.match(build, /dst=\/workspace\/\.git,readonly/u);
-  assert.match(build, /dst=\/run\/secrets\/npmrc,readonly/u);
+test('installs and builds directly on the runner with the source package manager', () => {
+  assert.match(workflow, /runs-on: ubuntu-latest/u);
+  assert.match(workflow, /uses: actions\/setup-node@v4\n        with:\n          node-version: 24/u);
+  const setup = step('Set up pnpm');
+  assert.match(setup, /uses: pnpm\/action-setup@v4/u);
+  assert.match(setup, /package_json_file: platform\/package.json/u);
+  assert.match(setup, /run_install: false/u);
+  assert.ok(workflow.indexOf('uses: actions/setup-node@v4') < workflow.indexOf('Set up pnpm'));
+  const install = step('Install dependencies');
+  const build = step('Build the deployment archive');
+  assert.match(install, /run: pnpm install --frozen-lockfile/u);
+  assert.match(build, /run: pnpm build --target linux-x64 --node-version 24 --tar/u);
+  assert.match(build, /timeout-minutes: 20/u);
+  assert.match(workflow, /NODE_OPTIONS: --max-old-space-size=6144/u);
+  const jobEnvironment = workflow.slice(workflow.indexOf('\n    env:\n'), workflow.indexOf('\n    steps:\n'));
+  assert.doesNotMatch(jobEnvironment, /secrets\.|NB_STUDIO_API_KEY|SOURCE_READ_TOKEN|PRIVATE_KEY/u);
+  for (const operation of [install, build]) {
+    assert.match(operation, /if: \$\{\{ steps.gate.outputs.skip == 'false' \}\}/u);
+    assert.match(operation, /working-directory: platform/u);
+    assert.match(operation, /NPM_CONFIG_USERCONFIG: \$\{\{ runner.temp \}\}\/platform-npmrc/u);
+    assert.doesNotMatch(operation, /NB_STUDIO|SOURCE_READ_TOKEN|PRIVATE_KEY|secrets\./u);
+  }
   assert.doesNotMatch(
-    build,
-    /--privileged|--pid(?:=|\s)|--network.?host|docker.sock|NB_STUDIO|GITHUB_ENV|GITHUB_OUTPUT|PRIVATE_KEY/u,
+    workflow,
+    /\bdocker\s+(?:run|build|rm)|^\s*container:|BUILD_CONTAINER|BUILD_IMAGE|--mount|platform-home|platform-tools/mu,
   );
-  assert.equal((build.match(/--env /gu) ?? []).length, 4);
+});
+
+test('keeps cleanup and the fresh post-build deployment gate on the runner path', () => {
+  const packageCleanup = step('Remove private package configuration');
+  assert.match(packageCleanup, /if: \$\{\{ always\(\) \}\}/u);
+  assert.ok(packageCleanup.includes('rm -f "$RUNNER_TEMP/platform-npmrc"'));
+  const finalCleanup = step('Remove temporary platform CI files');
+  assert.match(finalCleanup, /if: \$\{\{ always\(\) \}\}/u);
+  assert.ok(finalCleanup.includes('rm -f "$RUNNER_TEMP/platform-npmrc"'));
+  assert.ok(finalCleanup.includes('rm -rf "$NB_STUDIO_HOME" "$RUNNER_TEMP/platform-deploy"'));
   assert.ok(
-    workflow.indexOf('Build inside an isolated container') <
+    workflow.indexOf('Build the deployment archive') <
       workflow.indexOf('Create a fresh pre-deployment read token'),
   );
   assert.ok(workflow.indexOf('--before-deploy') < workflow.indexOf('Ensure the PR application'));
   assert.match(workflow, /steps\.deployment-token\.outputs\.token/u);
   assert.match(workflow, /Revoke the pre-deployment token/u);
-  assert.match(workflow, /always\(\).*\n        run: \|\n          docker rm -f/u);
+});
+
+test('matches the existing application Preview workflows runner-native build pattern', () => {
+  for (const file of ['studio-ci.yml', 'nocobase3-preview.yml', 'customerportal-ci.yml']) {
+    const reference = readFileSync(new URL(`../../workflows/${file}`, import.meta.url), 'utf8');
+    assert.match(reference, /runs-on: ubuntu-latest/u);
+    assert.match(reference, /run: pnpm install/u);
+    assert.match(reference, /run: pnpm build --target linux-x64 --tar/u);
+    assert.doesNotMatch(reference, /\bdocker run|^\s*container:/mu);
+  }
 });
 
 test('all multiline shell scripts parse without executing any build or deployment', () => {

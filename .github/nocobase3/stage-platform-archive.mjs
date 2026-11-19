@@ -2,7 +2,7 @@ import { constants, copyFileSync, lstatSync, mkdirSync, realpathSync } from 'nod
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-/** The container has exited before this trusted host step reads anything it wrote. Never follow an escape link. */
+/** Stage the completed archive outside the application directory. Never follow an escape link. */
 export function stageArchive(sourceRoot, destination) {
   const root = realpathSync(sourceRoot);
   const path = resolve(root, 'storage/exports/dist.tar.gz');

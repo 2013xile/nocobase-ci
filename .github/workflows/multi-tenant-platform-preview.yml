@@ -47,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
+      NODE_OPTIONS: --max-old-space-size=6144
       NB_STUDIO_SERVER: ${{ vars.NB_STUDIO_URL }}
       NB_STUDIO_KEYCHAIN: 'off'
       SOURCE_REPOSITORY: nocobase/multi-tenant-platform-app
@@ -55,7 +56,6 @@ jobs:
       APP_ID: multi-tenant-platform-app-pr-${{ inputs.pr_number }}
       ENVIRONMENT: preview
       LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      BUILD_CONTAINER: platform-build-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out trusted CI helpers
         uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Isolate trusted CLI state
+      - name: Configure the platform CLI state directory
         run: |
           echo "NB_STUDIO_HOME=$RUNNER_TEMP/platform-studio-home" >> "$GITHUB_ENV"
           echo "PLATFORM_ARCHIVE=$RUNNER_TEMP/platform-deploy/dist.tar.gz" >> "$GITHUB_ENV"
@@ -140,6 +140,12 @@ jobs:
           pr-number: ${{ inputs.pr_number }}
           skip-label: ${{ inputs.skip_label }}
           merge-pull-request: 'false'
+      - name: Set up pnpm
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: platform/package.json
+          run_install: false
       - name: Configure read-only package access
         if: ${{ steps.gate.outputs.skip == 'false' }}
         env:
@@ -149,30 +155,23 @@ jobs:
           test -n "$PRO_NPM_TOKEN" || { echo '::error::Configure read-only PRO_NPM_TOKEN.'; exit 1; }
           umask 077
           printf '%s\n' '@nocobase:registry=https://pkg-v3.nocobase.com/' "//pkg-v3.nocobase.com/:_authToken=$PRO_NPM_TOKEN" > "$RUNNER_TEMP/platform-npmrc"
-      # Application code never runs on the host. Only its source and read-only npm configuration are mounted;
-      # no Studio/App credential, runner environment file, Docker socket, helper directory or CLI session is visible.
-      - name: Build inside an isolated container
+      # Match the existing application Preview workflows: install and build on the Ubuntu runner.
+      - name: Install dependencies
         if: ${{ steps.gate.outputs.skip == 'false' }}
-        run: |
-          timeout 20m docker run --rm --init --name "$BUILD_CONTAINER" \
-            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 \
-            --user "$(id -u):$(id -g)" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/platform,dst=/workspace" \
-            --mount "type=bind,src=$GITHUB_WORKSPACE/platform/.git,dst=/workspace/.git,readonly" \
-            --mount "type=bind,src=$RUNNER_TEMP/platform-npmrc,dst=/run/secrets/npmrc,readonly" \
-            --workdir /workspace \
-            --env NPM_CONFIG_USERCONFIG=/run/secrets/npmrc \
-            --env NODE_OPTIONS=--max-old-space-size=6144 \
-            --env CI=true \
-            --env HOME=/tmp/platform-home \
-            node:24-bookworm bash -euo pipefail -c '
-              node -e "if (JSON.parse(require(\"fs\").readFileSync(\"package.json\", \"utf8\")).packageManager !== \"pnpm@11.11.0\") process.exit(1)"
-              mkdir -p "$HOME"
-              npm install --global --prefix /tmp/platform-tools pnpm@11.11.0
-              export PATH="/tmp/platform-tools/bin:$PATH"
-              pnpm install --frozen-lockfile
-              pnpm build --target linux-x64 --node-version 24 --tar
-            '
+        working-directory: platform
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/platform-npmrc
+        run: pnpm install --frozen-lockfile
+      - name: Build the deployment archive
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        timeout-minutes: 20
+        working-directory: platform
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/platform-npmrc
+        run: pnpm build --target linux-x64 --node-version 24 --tar
+      - name: Remove private package configuration
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/platform-npmrc"
       - name: Stage the archive without following application escape links
         if: ${{ steps.gate.outputs.skip == 'false' }}
         env:
@@ -219,9 +218,8 @@ jobs:
         env:
           NB_STUDIO_API_KEY: ${{ secrets.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY }}
         run: nb-studio build status --app "$APP_ID" --repository "$SOURCE_REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
-      - name: Remove the build container and credentials
+      - name: Remove temporary platform CI files
         if: ${{ always() }}
         run: |
-          docker rm -f "$BUILD_CONTAINER" >/dev/null 2>&1 || true
           rm -f "$RUNNER_TEMP/platform-npmrc"
           rm -rf "$NB_STUDIO_HOME" "$RUNNER_TEMP/platform-deploy"
