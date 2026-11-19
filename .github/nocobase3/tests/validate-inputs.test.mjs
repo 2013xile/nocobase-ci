@@ -71,10 +71,10 @@ test('accepts only the forwarded source repositories and a plain checkout path',
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'v3-pro-registry', targetBranch: 'main', checkoutPath: 'v3-pro-registry' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'nocobase-bot', targetBranch: 'main', checkoutPath: 'nocobase-bot' }));
   assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'verdaccio', targetBranch: 'next', checkoutPath: 'verdaccio' }));
-  rejects({ repository: 'website-v3' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
-  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
-  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
-  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio.');
+  rejects({ repository: 'website-v3' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio, multi-tenant-platform-app.');
+  rejects({ repository: 'customerportal' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio, multi-tenant-platform-app.');
+  rejects({ repository: 'studio,nocobase3-pro' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio, multi-tenant-platform-app.');
+  rejects({ repository: 'other/nocobase' }, 'repository must be one of nocobase3-pro, studio, nocobase3, nocobase, CustomerPortal, nocobase-bot, v3-pro-registry, verdaccio, multi-tenant-platform-app.');
   rejects({ checkoutPath: '../outside' }, 'path must be a single lowercase directory name.');
   rejects({ checkoutPath: '' }, 'path must be a single lowercase directory name.');
 });
@@ -120,4 +120,10 @@ test('preserves custom target branches for all existing sources', () => {
       assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository, targetBranch }));
     }
   }
+});
+
+test('allows the platform on main only, without admitting a child or another namespace', () => {
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'multi-tenant-platform-app', targetBranch: 'main', checkoutPath: 'platform' }));
+  assert.throws(() => validateInputs({ ...validPullRequest, repository: 'multi-tenant-platform-app', targetBranch: 'dev' }), /must be main/);
+  assert.throws(() => validateInputs({ ...validPullRequest, repository: 'multi-tenant-sub-app', targetBranch: 'main' }), /repository must be/);
 });
