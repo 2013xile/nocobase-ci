@@ -21,15 +21,13 @@ export function evaluateChecks(checks, headSha) {
   if (!relevant.length) return { state: 'pending', reason: 'Waiting for the platform Bot checks.' };
   const requestId = relevant[0].requestId;
   const group = relevant.filter((check) => check.requestId === requestId);
-  for (const name of QUALITY_CHECK_NAMES) {
-    const check = group.find((each) => each.name === name);
+  const latest = QUALITY_CHECK_NAMES.map((name) => group.find((check) => check.name === name));
+  for (const check of latest) {
     if (check?.status === 'completed' && check.conclusion !== 'success') {
-      return { state: 'failed', reason: `${name} concluded ${check.conclusion ?? 'without a conclusion'}.` };
+      return { state: 'failed', reason: `${check.name} concluded ${check.conclusion ?? 'without a conclusion'}.` };
     }
   }
-  return QUALITY_CHECK_NAMES.every((name) =>
-    group.some((check) => check.name === name && check.status === 'completed' && check.conclusion === 'success'),
-  )
+  return latest.every((check) => check?.status === 'completed' && check.conclusion === 'success')
     ? { state: 'success', reason: 'All five platform quality checks passed.' }
     : { state: 'pending', reason: 'Waiting for all five checks of the newest platform request.' };
 }

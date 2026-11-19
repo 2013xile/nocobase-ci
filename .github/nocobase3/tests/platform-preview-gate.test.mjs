@@ -169,3 +169,18 @@ test('the pre-deployment recheck refuses a closed, changed or newly skipped PR a
     }
   }
 });
+
+test('a native Actions retry cannot borrow earlier successful checks of the same Bot request', () => {
+  for (const status of ['queued', 'in_progress']) {
+    const retry = checks(10);
+    retry[0].status = status;
+    retry[0].conclusion = null;
+    assert.equal(evaluateChecks([...checks(), ...retry], SHA).state, 'pending');
+  }
+  const failed = checks(10);
+  failed[0].conclusion = 'failure';
+  assert.equal(evaluateChecks([...checks(), ...failed], SHA).state, 'failed');
+  const oldFailed = checks();
+  oldFailed[0].conclusion = 'failure';
+  assert.equal(evaluateChecks([...oldFailed, ...checks(10)], SHA).state, 'success');
+});
