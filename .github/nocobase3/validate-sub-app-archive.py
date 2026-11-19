@@ -33,31 +33,45 @@ def validate_archive(source_root):
                          f"{prefix}/dist/client/index.js", f"{prefix}/dist/portal.js"})
         portal_manifests[f"{prefix}/package.json"] = f"@nocobase/app-portal-{portal}"
     seen = set()
+    regular = {}
     metadata = {}
     with gzip.open(archive, "rb") as stream:
         with tarfile.open(fileobj=stream, mode="r|") as bundle:
             for member in bundle:
                 name = member.name.removeprefix("./").rstrip("/")
                 parts = PurePosixPath(name).parts
-                if PurePosixPath(name).as_posix() != name:
-                    raise ValueError("Noncanonical archive path")
-                if not name or name.startswith("/") or "\\" in name or ".." in parts:
-                    raise ValueError("Unsafe archive path")
-                if name in seen or not (member.isfile() or member.isdir()):
-                    raise ValueError("Duplicate entry, link or special file in archive")
+                if not name or name.startswith("/") or "\\" in name or ".." in parts or PurePosixPath(name).as_posix() != name:
+                    raise ValueError("Unsafe or noncanonical archive path")
+                if name in seen or not (member.isfile() or member.isdir() or member.islnk()):
+                    raise ValueError("Duplicate entry, symlink or special file in archive")
+                if (member.isdir() or member.islnk()) and member.size != 0:
+                    raise ValueError("Unexpected directory or hardlink payload")
                 seen.add(name)
                 if name not in {"Dockerfile", "Dockerfile.dockerignore", "config.example.yml", "dist"} and not name.startswith("dist/"):
                     raise ValueError("Unexpected archive root")
                 if len(parts) > 1 and parts[0] == "dist" and (parts[1].startswith(".env") or parts[1] in {"config.yml", "config.yaml", "storage"}):
                     raise ValueError("Runtime state in archive")
+                size = member.size
+                manifest = None
+                if member.islnk():
+                    # pnpm's hoisted production install can share inodes. Permit only a
+                    # direct link to an earlier regular dist file, never a link chain.
+                    target = member.linkname
+                    if not target.startswith("dist/") or PurePosixPath(target).as_posix() != target or ".." in PurePosixPath(target).parts or "\\" in target or target not in regular:
+                        raise ValueError("Unsafe, unresolved or chained hardlink")
+                    size, manifest = regular[target]
+                elif member.isfile():
+                    if name.endswith("/package.json") and member.size <= 1024 * 1024:
+                        manifest = bundle.extractfile(member).read()
+                    regular[name] = (size, manifest)
                 if name in required:
-                    if not member.isfile() or member.size == 0:
-                        raise ValueError("Required archive entry must be a nonempty regular file")
+                    if not (member.isfile() or member.islnk()) or size == 0:
+                        raise ValueError("Required archive entry must be a nonempty file")
                     required.remove(name)
                 if name == "dist/package.json" or name in portal_manifests:
-                    if member.size > 1024 * 1024:
-                        raise ValueError("Oversized manifest")
-                    value = json.load(bundle.extractfile(member))
+                    if manifest is None:
+                        raise ValueError("Oversized or unavailable manifest")
+                    value = json.loads(manifest)
                     if name == "dist/package.json":
                         metadata = value
                     elif value.get("name") != portal_manifests[name]:

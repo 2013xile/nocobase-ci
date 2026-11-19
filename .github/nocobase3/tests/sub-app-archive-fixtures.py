@@ -48,6 +48,20 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(result["version"], "0.2.3")
         self.assertEqual(len(result["sha256"]), 64)
 
+    def test_accepts_only_safe_prior_regular_hardlinks(self):
+        self.files["dist/shared"] = b"shared inode fixture"
+        link = tarfile.TarInfo("dist/link")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "dist/shared"
+        self.pack(link)
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 3)
+        for target in ["dist/link", "Dockerfile", "dist/missing", "../escape", "/host-secret", "dist/./shared"]:
+            with self.subTest(target=target):
+                link.linkname = target
+                self.pack(link)
+                with self.assertRaises(ValueError):
+                    validator.validate_archive(self.root)
+
     def test_rejects_bad_metadata(self):
         for key, value in [("name", "@nocobase/multi-tenant-platform-app"), ("version", "9.0.0")]:
             with self.subTest(key=key):

@@ -41,7 +41,7 @@ need Preview. Explicit source repository and head SHA reach every Studio report/
 
 The archive verifier reads complete tar/gzip without extraction, validates source
 name/version, tenant protocol, Linux x64/glibc/Node 24 metadata and all three vendored
-Portal packages/compiled entries. Links, escapes, special files, duplicate entries
+Portal packages/compiled entries. Symlinks, unsafe hardlinks, escapes, special files, duplicate entries
 and runtime state are rejected. Quality discards the archive; Preview rebuilds and
 stages outside source, then uploads directly. No public Artifact or application cache.
 
