@@ -38,6 +38,9 @@ inputs:
   merge-pull-request:
     description: Create and check out a local merge commit from base_sha and head_sha.
     default: 'true'
+  submodules:
+    description: Recursively initialize submodules when true.
+    default: 'true'
   partial-history:
     description: Fetch only the history of head_sha and base_sha, without file contents, instead of every branch and tag.
     default: 'false'
@@ -57,6 +60,7 @@ runs:
         TARGET_BRANCH: ${{ inputs.target-branch }}
         PR_NUMBER: ${{ inputs.pr-number }}
         SKIP_LABEL: ${{ inputs.skip-label }}
+        SUBMODULES: ${{ inputs.submodules }}
       run: node "$GITHUB_ACTION_PATH/../validate-inputs.mjs"
 
     - name: Create a read-only source token
@@ -78,7 +82,7 @@ runs:
         token: ${{ steps.app-token.outputs.token }}
         persist-credentials: false
         fetch-depth: ${{ inputs.partial-history == 'true' && 1 || 0 }}
-        submodules: recursive
+        submodules: ${{ inputs.submodules == 'true' && 'recursive' || 'false' }}
         path: ${{ inputs.path }}
         show-progress: false
 
@@ -109,6 +113,7 @@ runs:
         HEAD_SHA: ${{ inputs.head-sha }}
         BASE_SHA: ${{ inputs.base-sha }}
         MERGE_PULL_REQUEST: ${{ inputs.merge-pull-request }}
+        SUBMODULES: ${{ inputs.submodules }}
       run: node "$GITHUB_ACTION_PATH/../prepare-snapshot.mjs"
 
     - name: Revoke the source token

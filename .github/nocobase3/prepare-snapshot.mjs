@@ -13,7 +13,7 @@ function assertCommit(cwd, sha) {
   git(cwd, ['cat-file', '-e', `${sha}^{commit}`]);
 }
 
-export function prepareSnapshot({ cwd, eventName, headSha, baseSha, mergePullRequest }) {
+export function prepareSnapshot({ cwd, eventName, headSha, baseSha, mergePullRequest, submodules = 'true' }) {
   const head = headSha.toLowerCase();
   const base = baseSha.toLowerCase();
 
@@ -45,6 +45,7 @@ export function prepareSnapshot({ cwd, eventName, headSha, baseSha, mergePullReq
     throw new Error('The checked-out commit does not match head_sha.');
   }
 
+  if (submodules === 'false') return;
   git(cwd, ['submodule', 'sync', '--recursive']);
   git(cwd, ['submodule', 'update', '--init', '--recursive']);
 }
@@ -57,6 +58,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       headSha: process.env.HEAD_SHA ?? '',
       baseSha: process.env.BASE_SHA ?? '',
       mergePullRequest: process.env.MERGE_PULL_REQUEST ?? '',
+      submodules: process.env.SUBMODULES,
     });
   } catch (error) {
     console.error(`::error::${error instanceof Error ? error.message : String(error)}`);

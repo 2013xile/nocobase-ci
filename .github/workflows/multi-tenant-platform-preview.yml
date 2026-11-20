@@ -140,6 +140,11 @@ jobs:
           pr-number: ${{ inputs.pr_number }}
           skip-label: ${{ inputs.skip_label }}
           merge-pull-request: 'false'
+          submodules: 'false'
+      - name: Check out the pinned framework
+        if: ${{ steps.gate.outputs.skip == 'false' }}
+        working-directory: platform
+        run: node ../.github/nocobase3/platform-framework.mjs
       - name: Set up pnpm
         if: ${{ steps.gate.outputs.skip == 'false' }}
         uses: pnpm/action-setup@v4

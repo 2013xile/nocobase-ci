@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
+const checkout = readFileSync(new URL('../checkout/action.yml', import.meta.url), 'utf8');
 const workflow = readFileSync(
   new URL('../../workflows/multi-tenant-platform-preview.yml', import.meta.url),
   'utf8',
@@ -33,6 +34,7 @@ test('waits for source checks before rebuilding, and does not publish private ar
     'Wait for the platform quality checks',
     'Revoke the gate token',
     'Check out the verified platform head',
+    'Check out the pinned framework',
     'Set up pnpm',
     'Install dependencies',
     'Build the deployment archive',
@@ -53,6 +55,22 @@ test('waits for source checks before rebuilding, and does not publish private ar
   assert.doesNotMatch(workflow, /upload-artifact|download-artifact|actions\/cache/u);
   assert.doesNotMatch(workflow, /secrets\.NB_STUDIO_API_KEY\b/u);
   assert.match(workflow, /secrets\.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY/u);
+});
+
+test('disables recursive checkout for the platform and only fetches the pin after source token revocation', () => {
+  assert.match(step('Check out the verified platform head'), /submodules: 'false'/u);
+  assert.match(checkout, /submodules:\n    description: .+\n    default: 'true'/u);
+  assert.match(checkout, /submodules: \$\{\{ inputs\.submodules == 'true' && 'recursive' \|\| 'false' \}\}/u);
+  assert.equal((checkout.match(/SUBMODULES: \$\{\{ inputs\.submodules \}\}/gu) ?? []).length, 2);
+  assert.match(checkout, /persist-credentials: false/u);
+  assert.match(checkout, /- name: Revoke the source token\n      if: \$\{\{ always\(\) && steps\.app-token\.outputs\.token != '' \}\}/u);
+  assert.match(checkout, /--request DELETE[\s\S]*https:\/\/api\.github\.com\/installation\/token\s*$/u);
+  assert.doesNotMatch(checkout, /continue-on-error/u);
+
+  const framework = step('Check out the pinned framework');
+  assert.match(framework, /if: \$\{\{ steps\.gate\.outputs\.skip == 'false' \}\}/u);
+  assert.match(framework, /working-directory: platform\n        run: node \.\.\/\.github\/nocobase3\/platform-framework\.mjs$/u);
+  assert.doesNotMatch(framework, /token|secrets\.|always\(\)|continue-on-error/u);
 });
 
 test('installs and builds directly on the runner with the source package manager', () => {
