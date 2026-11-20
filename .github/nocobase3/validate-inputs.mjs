@@ -29,6 +29,12 @@ export function validateInputs(input) {
   if (input.checkoutPath !== undefined && !/^[a-z][a-z0-9-]{0,63}$/u.test(input.checkoutPath)) {
     reject('path must be a single lowercase directory name.');
   }
+  if (input.submodules !== undefined && !['true', 'false'].includes(input.submodules)) {
+    reject('submodules must be true or false.');
+  }
+  if (input.repository === 'multi-tenant-platform-app' && input.submodules === 'true') {
+    reject('submodules must be false for platform checkout.');
+  }
   if (!UUID_PATTERN.test(input.requestId)) reject('request_id must be a UUID.');
   if (!['pull_request', 'push'].includes(input.eventName)) {
     reject('event_name must be pull_request or push.');
@@ -94,6 +100,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       targetBranch: process.env.TARGET_BRANCH ?? '',
       prNumber: process.env.PR_NUMBER ?? '',
       skipLabel: process.env.SKIP_LABEL ?? '',
+      submodules: process.env.SUBMODULES,
     });
   } catch (error) {
     if (!(error instanceof InputValidationError)) throw error;

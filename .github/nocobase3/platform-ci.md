@@ -16,10 +16,12 @@ Merge both external workflow PRs and synchronize the quality workflow/helpers to
 
 The platform PR must remove its superseded local workflow to prevent double deployment. Merge/deploy the Bot registration last, with separate approval: a Bot main push can automatically deploy the shared Bot. Studio Checks source stays host. Only after real external acceptance should obsolete source-repository Secrets be removed.
 
+Platform checkout disables recursive submodule handling. After source token revocation, the job validates the committed `.gitmodules` against the fixed `vendor/nocobase3` path and public `https://github.com/nocobase/nocobase.git` URL. It verifies that the gitlink is reachable from `v3`, then fetches that commit only, at depth one, without credentials or nested submodules. The log and step summary record the exact source and framework SHAs. Older source heads with no submodule report `framework=none`.
+
 ## Verification
 
 ```bash
-node --test .github/nocobase3/tests/platform-preview*.test.mjs .github/nocobase3/tests/stage-platform-archive.test.mjs .github/nocobase3/tests/validate-inputs.test.mjs .github/nocobase3/tests/prepare-snapshot.test.mjs
+node --test .github/nocobase3/tests/platform-framework.test.mjs .github/nocobase3/tests/platform-preview*.test.mjs .github/nocobase3/tests/stage-platform-archive.test.mjs .github/nocobase3/tests/validate-inputs.test.mjs .github/nocobase3/tests/prepare-snapshot.test.mjs
 actionlint .github/workflows/multi-tenant-platform-preview.yml
 ```
 

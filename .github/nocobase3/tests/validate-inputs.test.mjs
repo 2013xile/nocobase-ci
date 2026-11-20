@@ -127,3 +127,11 @@ test('allows the platform on main only, without admitting a child or another nam
   assert.throws(() => validateInputs({ ...validPullRequest, repository: 'multi-tenant-platform-app', targetBranch: 'dev' }), /must be main/);
   assert.throws(() => validateInputs({ ...validPullRequest, repository: 'multi-tenant-sub-app', targetBranch: 'main' }), /repository must be/);
 });
+
+test('requires a non-recursive checkout for the platform and validates the shared switch', () => {
+  const platform = { ...validPullRequest, repository: 'multi-tenant-platform-app', targetBranch: 'main' };
+  assert.doesNotThrow(() => validateInputs({ ...platform, submodules: 'false' }));
+  assert.throws(() => validateInputs({ ...platform, submodules: 'true' }), /must be false for platform checkout/u);
+  assert.doesNotThrow(() => validateInputs({ ...validPullRequest, repository: 'studio', submodules: 'true' }));
+  rejects({ submodules: 'recursive' }, 'submodules must be true or false.');
+});
