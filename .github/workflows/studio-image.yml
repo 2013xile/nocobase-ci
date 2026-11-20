@@ -17,7 +17,7 @@ run-name: studio-image:${{ inputs.ref }}:${{ inputs.edition || 'studio-ee' }}${{
 # The private testing workspace package is part of the Studio source checkout. Require it before installing; never
 # fall back to a separate private-source overlay or publish a normal image missing QA.
 #
-# This workflow publishes only studio-ee. Formal releases publish both editions through v3-studio-release.yml.
+# This workflow publishes only studio-ee. Formal releases publish all three editions through v3-studio-release.yml.
 #
 # The internal server pulls the image with the compose file in nocobase/deploy (`docker/studio/`).
 #
@@ -41,7 +41,7 @@ on:
       edition:
         description: Image to validate; publishing is restricted to studio-ee
         type: choice
-        options: [studio-ee, studio]
+        options: [studio-ee, studio, studio-ce]
         default: studio-ee
 
 permissions:
@@ -71,7 +71,7 @@ jobs:
         run: |
           case "$EDITION" in
             studio-ee) ;;
-            studio) test "$DRY_RUN" = true || { echo 'Ordinary images are validation-only here.' >&2; exit 1; } ;;
+            studio | studio-ce) test "$DRY_RUN" = true || { echo 'Professional and community images are validation-only here.' >&2; exit 1; } ;;
             *) exit 1 ;;
           esac
       # A read-only token for nocobase/studio alone, revoked as soon as the ref is resolved.
