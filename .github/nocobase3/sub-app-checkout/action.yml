@@ -1,0 +1,88 @@
+name: Check out a forwarded sub-app head
+description: Obtain a fixed-source OIDC token and revoke it before executing any application code.
+inputs:
+  app-id:
+    description: Source GitHub App ID.
+    required: true
+  private-key:
+    description: Source GitHub App private key.
+    required: true
+  request-id:
+    description: The Bot request UUID.
+    required: true
+  event-name:
+    description: The original pull_request or push event.
+    required: true
+  head-sha:
+    description: Immutable source head SHA.
+    required: true
+  base-sha:
+    description: Immutable source base SHA.
+    required: true
+  target-branch:
+    description: The source target branch, main.
+    required: true
+  pr-number:
+    description: The source PR number, or zero for a push.
+    required: true
+  skip-label:
+    description: Whether the PR has no-preview; quality checks still run.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate sub-app dispatch
+      shell: bash
+      env:
+        REPOSITORY: multi-tenant-sub-app
+        CHECKOUT_PATH: sub-app
+        REQUEST_ID: ${{ inputs.request-id }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        SKIP_LABEL: ${{ inputs.skip-label }}
+        SUBMODULES: 'false'
+      run: node "$GITHUB_ACTION_PATH/../validate-sub-app-inputs.mjs"
+    - name: Create a child-only read token
+      id: source-token
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: nocobase
+        repositories: multi-tenant-sub-app
+        permission-contents: read
+        skip-token-revoke: true
+    - name: Check out the immutable sub-app head
+      uses: actions/checkout@v4
+      with:
+        repository: nocobase/multi-tenant-sub-app
+        ref: ${{ inputs.head-sha }}
+        token: ${{ steps.source-token.outputs.token }}
+        persist-credentials: false
+        fetch-depth: 0
+        submodules: false
+        path: sub-app
+        show-progress: false
+    - name: Verify the sub-app snapshot
+      shell: bash
+      working-directory: sub-app
+      env:
+        EVENT_NAME: ${{ inputs.event-name }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        MERGE_PULL_REQUEST: 'false'
+        SUBMODULES: 'false'
+      run: node "$GITHUB_ACTION_PATH/../prepare-snapshot.mjs"
+    - name: Revoke the source token
+      if: ${{ always() && steps.source-token.outputs.token != '' }}
+      shell: bash
+      env:
+        SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+      run: |
+        curl --fail-with-body --silent --show-error --request DELETE \
+          --header "Authorization: Bearer $SOURCE_TOKEN" \
+          --header 'X-GitHub-Api-Version: 2022-11-28' \
+          https://api.github.com/installation/token
