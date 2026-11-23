@@ -34,7 +34,10 @@ test('waits for source checks before rebuilding, and does not publish private ar
     'Wait for the platform quality checks',
     'Revoke the gate token',
     'Check out the verified platform head',
+    'Inspect the platform framework layout',
+    'Create a Pro-only read token',
     'Check out the pinned framework',
+    'Revoke the Pro source token',
     'Set up pnpm',
     'Install dependencies',
     'Build the deployment archive',
@@ -57,7 +60,7 @@ test('waits for source checks before rebuilding, and does not publish private ar
   assert.match(workflow, /secrets\.MULTI_TENANT_PLATFORM_NB_STUDIO_API_KEY/u);
 });
 
-test('disables recursive checkout for the platform and only fetches the pin after source token revocation', () => {
+test('disables recursive checkout and revokes the application and Pro tokens before application code runs', () => {
   assert.match(step('Check out the verified platform head'), /submodules: 'false'/u);
   assert.match(checkout, /submodules:\n    description: .+\n    default: 'true'/u);
   assert.match(checkout, /submodules: \$\{\{ inputs\.submodules == 'true' && 'recursive' \|\| 'false' \}\}/u);
@@ -69,8 +72,21 @@ test('disables recursive checkout for the platform and only fetches the pin afte
 
   const framework = step('Check out the pinned framework');
   assert.match(framework, /if: \$\{\{ steps\.gate\.outputs\.skip == 'false' \}\}/u);
-  assert.match(framework, /working-directory: platform\n        run: node \.\.\/\.github\/nocobase3\/platform-framework\.mjs$/u);
-  assert.doesNotMatch(framework, /token|secrets\.|always\(\)|continue-on-error/u);
+  assert.match(framework, /working-directory: platform/u);
+  assert.match(framework, /PLATFORM_PRO_SOURCE_TOKEN: \$\{\{ steps\.pro-token\.outputs\.token \}\}/u);
+  assert.match(framework, /run: node \.\.\/\.github\/nocobase3\/platform-framework\.mjs$/u);
+  assert.doesNotMatch(framework, /secrets\.|always\(\)|continue-on-error/u);
+  const inspect = step('Inspect the platform framework layout');
+  assert.match(inspect, /--inspect$/u);
+  assert.doesNotMatch(inspect, /secrets\.|TOKEN/u);
+  const token = step('Create a Pro-only read token');
+  assert.match(token, /framework-layout\.outputs\.pro_required == 'true'/u);
+  assert.match(token, /owner: nocobase\n          repositories: nocobase3-pro\n          permission-contents: read/u);
+  assert.doesNotMatch(token, /permission-[^:]+: write|repositories: \$|skip-token-revoke: false/u);
+  const revoke = step('Revoke the Pro source token');
+  assert.match(revoke, /always\(\) && steps\.pro-token\.outputs\.token != ''/u);
+  assert.match(revoke, /--request DELETE[\s\S]*https:\/\/api\.github\.com\/installation\/token/u);
+  assert.doesNotMatch(revoke, /continue-on-error/u);
 });
 
 test('installs and builds directly on the runner with the source package manager', () => {
