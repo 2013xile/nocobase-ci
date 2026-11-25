@@ -25,11 +25,26 @@ class ArchiveTests(unittest.TestCase):
         self.files = {path: b"fixture" for path in ["dist/server/standalone.js", "dist/cli/index.js",
                       "dist/client/index.html", "dist/variables.json", "config.example.yml",
                       "Dockerfile", "Dockerfile.dockerignore"]}
-        for portal in validator.PORTALS:
-            prefix = f"dist/vendor/@nocobase/app-portal-{portal}"
-            self.files[f"{prefix}/package.json"] = json.dumps({"name": f"@nocobase/app-portal-{portal}"}).encode()
-            for rel in ["dist/server/index.js", "dist/client/index.js", "dist/portal.js"]:
-                self.files[f"{prefix}/{rel}"] = b"fixture"
+        self.portal_name = "@customer/meeting-room"
+        self.portal_prefix = self.add_portal(self.portal_name)
+
+    def add_portal(self, name, installed=False):
+        prefix = f"dist/{'node_modules' if installed else 'vendor'}/{name}"
+        self.meta.setdefault("dependencies", {})[name] = "1.0.0" if installed else f"file:./vendor/{name}"
+        manifest = {"name": name, "version": "1.0.0", "nocobase": {
+            "portal": {"schemaVersion": 1, "locales": {"en-US": {"title": "Meeting"}}}},
+            "exports": {entry: {"types": f"./lib/{file}.d.ts", "import": f"./lib/{file}.js"}
+                        for entry, file in [("./server", "backend"), ("./client", "frontend"), ("./portal", "portal")]}}
+        self.files[f"{prefix}/package.json"] = json.dumps(manifest).encode()
+        for file in ["backend", "frontend", "portal"]:
+            self.files[f"{prefix}/lib/{file}.js"] = b"throw new Error('must not execute');"
+        return prefix
+
+    def update_portal(self, transform):
+        key = f"{self.portal_prefix}/package.json"
+        manifest = json.loads(self.files[key])
+        transform(manifest)
+        self.files[key] = json.dumps(manifest).encode()
 
     def pack(self, extra=None):
         files = {**self.files, "dist/package.json": json.dumps(self.meta).encode()}
@@ -44,9 +59,133 @@ class ArchiveTests(unittest.TestCase):
     def test_complete(self):
         self.pack()
         result = validator.validate_archive(self.root)
-        self.assertEqual(result["portals"], 3)
+        self.assertEqual(result["portals"], 1)
         self.assertEqual(result["version"], "0.2.3")
         self.assertEqual(len(result["sha256"]), 64)
+
+    def test_accepts_zero_portals_and_ignores_unreferenced_packages(self):
+        self.meta["dependencies"] = {}
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 0)
+        self.files = {name: body for name, body in self.files.items() if not name.startswith("dist/vendor/")}
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 0)
+
+    def test_counts_declared_packages_not_names_or_legacy_ids(self):
+        self.add_portal("@nocobase/app-portal-equipment")
+        self.add_portal("custom-dashboard", installed=True)
+        self.meta["nocobase"]["portals"] = [{"key": "not-a-package"}]
+        self.meta["dependencies"]["@nocobase/app-portal-kit"] = "1.0.0"
+        self.files["dist/node_modules/@nocobase/app-portal-kit/package.json"] = b'{"name":"@nocobase/app-portal-kit"}'
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 3)
+
+    def test_accepts_equipment_as_only_portal(self):
+        self.meta["dependencies"] = {}
+        self.files = {name: body for name, body in self.files.items() if not name.startswith("dist/vendor/")}
+        self.add_portal("@nocobase/app-portal-equipment")
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
+
+    def test_validates_portal_hardlinks(self):
+        key = f"{self.portal_prefix}/lib/backend.js"
+        del self.files[key]
+        link = tarfile.TarInfo(key)
+        link.type = tarfile.LNKTYPE
+        link.linkname = f"{self.portal_prefix}/lib/frontend.js"
+        self.pack(link)
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
+        installed = f"dist/node_modules/{self.portal_name}/package.json"
+        link.name = installed
+        link.linkname = f"{self.portal_prefix}/package.json"
+        self.files[key] = b"fixture"
+        for file in ["backend", "frontend", "portal"]:
+            self.files[f"dist/node_modules/{self.portal_name}/lib/{file}.js"] = b"fixture"
+        self.pack(link)
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
+
+    def test_rejects_missing_empty_and_oversized_manifests(self):
+        key = f"{self.portal_prefix}/package.json"
+        for body in [None, b"", b" " * (1024 * 1024 + 1), b"[]", b"invalid"]:
+            with self.subTest(body_size=len(body) if body is not None else None):
+                self.files.pop(key, None)
+                if body is not None:
+                    self.files[key] = body
+                self.pack()
+                with self.assertRaises(ValueError):
+                    validator.validate_archive(self.root)
+
+    def test_rejects_malformed_portal_declarations(self):
+        for portal in [None, [], {}, {"schemaVersion": 2, "locales": {}},
+                       {"schemaVersion": True, "locales": {}},
+                       {"schemaVersion": 1, "locales": []},
+                       {"schemaVersion": 1, "locales": {"en-US": {"title": " "}}}]:
+            with self.subTest(portal=portal):
+                self.update_portal(lambda manifest: manifest.update(nocobase={"portal": portal}))
+                self.pack()
+                with self.assertRaises(ValueError):
+                    validator.validate_archive(self.root)
+
+    def test_rejects_conflicting_installed_and_vendor_declarations(self):
+        key = f"dist/node_modules/{self.portal_name}/package.json"
+        self.files[key] = json.dumps({"name": self.portal_name}).encode()
+        self.pack()
+        with self.assertRaisesRegex(ValueError, "Conflicting"):
+            validator.validate_archive(self.root)
+
+    def test_rejects_bad_dependency_paths_and_types(self):
+        for name, spec in [("../escape", "1.0.0"), (self.portal_name, None),
+                           (self.portal_name, "file:/host"), (self.portal_name, "file:../host"),
+                           (self.portal_name, "file:vendor/../../host")]:
+            with self.subTest(name=name, spec=spec):
+                self.meta["dependencies"] = {name: spec}
+                self.pack()
+                with self.assertRaises(ValueError):
+                    validator.validate_archive(self.root)
+
+    def test_validates_optional_dependencies_when_present(self):
+        self.meta["optionalDependencies"] = {"optional-native-addon": "1.0.0"}
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
+        prefix = self.add_portal("@customer/optional", installed=True)
+        self.meta["optionalDependencies"]["@customer/optional"] = self.meta["dependencies"].pop("@customer/optional")
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 2)
+        del self.files[f"{prefix}/lib/portal.js"]
+        self.pack()
+        with self.assertRaises(ValueError):
+            validator.validate_archive(self.root)
+
+    def test_uses_production_exports_without_requiring_development_or_types(self):
+        self.update_portal(lambda manifest: manifest["exports"].update({
+            "./server": {"types": "./src/server.d.ts", "development": "./src/server.ts",
+                         "node": {"import": "./lib/backend.js"}},
+            "./client": {"browser": "./lib/frontend.js", "default": "./not-used.js"},
+            "./portal": {"import": "./lib/portal.js", "require": "./not-used.cjs"}}))
+        self.pack()
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
+
+    def test_rejects_directory_in_place_of_portal_entry(self):
+        key = f"{self.portal_prefix}/lib/portal.js"
+        del self.files[key]
+        directory = tarfile.TarInfo(key)
+        directory.type = tarfile.DIRTYPE
+        self.pack(directory)
+        with self.assertRaises(ValueError):
+            validator.validate_archive(self.root)
+
+    def test_rejects_missing_empty_or_unsafe_exports(self):
+        for target in [None, {}, {"types": "./lib/portal.d.ts"}, "./missing.js", "./../escape", "/absolute", "./lib//portal.js", "./lib\\portal.js"]:
+            with self.subTest(target=target):
+                self.update_portal(lambda manifest: manifest["exports"].update({"./portal": target}))
+                self.pack()
+                with self.assertRaises(ValueError):
+                    validator.validate_archive(self.root)
+        self.update_portal(lambda manifest: manifest["exports"].update({"./portal": "./lib/portal.js"}))
+        self.files[f"{self.portal_prefix}/lib/portal.js"] = b""
+        self.pack()
+        with self.assertRaises(ValueError):
+            validator.validate_archive(self.root)
 
     def test_accepts_only_safe_prior_regular_hardlinks(self):
         self.files["dist/shared"] = b"shared inode fixture"
@@ -54,7 +193,7 @@ class ArchiveTests(unittest.TestCase):
         link.type = tarfile.LNKTYPE
         link.linkname = "dist/shared"
         self.pack(link)
-        self.assertEqual(validator.validate_archive(self.root)["portals"], 3)
+        self.assertEqual(validator.validate_archive(self.root)["portals"], 1)
         for target in ["dist/link", "Dockerfile", "dist/missing", "../escape", "/host-secret", "dist/./shared"]:
             with self.subTest(target=target):
                 link.linkname = target
@@ -82,13 +221,13 @@ class ArchiveTests(unittest.TestCase):
                 target[key] = old
 
     def test_rejects_missing_portal_and_wrong_portal_identity(self):
-        key = "dist/vendor/@nocobase/app-portal-devices/dist/server/index.js"
+        key = f"{self.portal_prefix}/lib/backend.js"
         del self.files[key]
         self.pack()
         with self.assertRaises(ValueError):
             validator.validate_archive(self.root)
         self.files[key] = b"fixture"
-        self.files["dist/vendor/@nocobase/app-portal-devices/package.json"] = b'{"name":"wrong"}'
+        self.update_portal(lambda manifest: manifest.update(name="wrong"))
         self.pack()
         with self.assertRaises(ValueError):
             validator.validate_archive(self.root)
