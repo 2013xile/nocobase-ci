@@ -39,11 +39,9 @@ Trusted helpers come from this CI repository, never from the application checkou
 Do not copy Studio's runtime-change skip logic: pure CI/docs acceptance PRs also
 need Preview. Explicit source repository and head SHA reach every Studio report/deploy.
 
-The archive verifier reads complete tar/gzip without extraction, validates source
-name/version, tenant protocol, Linux x64/glibc/Node 24 metadata and all three vendored
-Portal packages/compiled entries. Symlinks, unsafe hardlinks, escapes, special files, duplicate entries
-and runtime state are rejected. Quality discards the archive; Preview rebuilds and
-stages outside source, then uploads directly. No public Artifact or application cache.
+The archive verifier reads complete tar/gzip without extraction and validates source name/version, tenant protocol and Linux x64/glibc/Node 24 metadata. It discovers Portal packages from the archive application's direct dependencies and optional dependencies, inspecting installed packages and declared `file:` vendor copies for `nocobase.portal` metadata, as the deployment scanner does. It validates Portal identity, declaration consistency and nonempty production `./server`, `./client` and `./portal` export targets without executing package code. Names, scopes, output paths and Portal counts are not fixed: an equipment-only build, customer-defined Portals and zero-Portal builds are valid. Unreferenced packages and packages without Portal metadata (including Portal helper libraries) do not count; absent optional dependencies are allowed, but missing required manifests and malformed declarations fail validation.
+
+Symlinks, unsafe hardlinks, escapes, special files, duplicate entries and runtime state are rejected. Quality discards the archive; Preview rebuilds and stages outside source, then uploads directly. No public Artifact or application cache.
 
 Public CI logs still have exposure risk. Step env is not a filesystem sandbox:
 build code and Studio CLI state share runner storage. The user accepted this existing
