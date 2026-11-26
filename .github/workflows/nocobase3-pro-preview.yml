@@ -1,0 +1,149 @@
+name: NocoBase 3 Pro Enterprise preview
+run-name: pro-preview:${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: UUID shared with the source-repository check runs.
+        required: true
+        type: string
+      event_name:
+        description: Source event type (pull_request or push).
+        required: true
+        type: string
+      head_sha:
+        description: Immutable 40-character source head SHA.
+        required: true
+        type: string
+      base_sha:
+        description: Immutable 40-character base SHA, or forty zeroes for the first push.
+        required: true
+        type: string
+      target_branch:
+        description: Source target branch.
+        required: true
+        type: string
+      pr_number:
+        description: Positive pull request number, or 0 for a push.
+        required: true
+        type: string
+      skip_label:
+        description: Whether the source pull request has the no-preview label (true or false).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Preview
+    if: inputs.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: pro-preview-pr-${{ inputs.pr_number }}
+      cancel-in-progress: true
+    env:
+      REPOSITORY: nocobase/nocobase3-pro
+      APP_ID: nocobase3-pro-pr-${{ inputs.pr_number }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+      BASE_SHA: ${{ inputs.base_sha }}
+      PR: ${{ inputs.pr_number }}
+      NB_STUDIO_SERVER: https://studio.v2.test.nocobase.com/main
+      NB_STUDIO_KEYCHAIN: "off"
+      LOGS: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/nocobase3
+      - name: Read source PR
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase3-pro
+          permission-pull-requests: read
+      - name: Check branch and live head
+        id: gate
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: bash .github/nocobase3/pro-preview-gate.sh
+      - name: Check out the Pro head and pinned OSS revision
+        if: steps.gate.outputs.eligible == 'true'
+        uses: ./.github/nocobase3/checkout
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          request-id: ${{ inputs.request_id }}
+          event-name: ${{ inputs.event_name }}
+          head-sha: ${{ inputs.head_sha }}
+          base-sha: ${{ inputs.base_sha }}
+          target-branch: ${{ inputs.target_branch }}
+          pr-number: ${{ inputs.pr_number }}
+          skip-label: ${{ inputs.skip_label }}
+          merge-pull-request: 'false'
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.eligible == 'true'
+        with:
+          node-version: 24
+      - name: Install Studio CLI
+        id: cli
+        if: steps.gate.outputs.eligible == 'true'
+        env:
+          NB_STUDIO_API_KEY: ${{ secrets.NB_STUDIO_API_KEY_NOCOBASE3_PRO }}
+        run: |
+          manifest="$(curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER/api/agents/dist/products/nb-studio/targets/linux-x64?format=env")"
+          eval "$manifest"
+          mkdir -p "$RUNNER_TEMP/studio-cli"
+          curl -fsS -H "x-api-key: $NB_STUDIO_API_KEY" "$NB_STUDIO_SERVER$url" | tar -xz --strip-components=1 -C "$RUNNER_TEMP/studio-cli"
+          echo "$RUNNER_TEMP/studio-cli/bin" >> "$GITHUB_PATH"
+          export NB_STUDIO_HOME="$RUNNER_TEMP/pro-studio"
+          echo "NB_STUDIO_HOME=$NB_STUDIO_HOME" >> "$GITHUB_ENV"
+          printf %s "$NB_STUDIO_API_KEY" | "$RUNNER_TEMP/studio-cli/bin/nb-studio" login --server "$NB_STUDIO_SERVER" --api-key-stdin
+      - name: Report build and ask Studio whether to deploy
+        id: ensure
+        if: steps.gate.outputs.eligible == 'true'
+        env:
+          LABELED: ${{ steps.gate.outputs.labeled }}
+        run: |
+          nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state building --logs "$LOGS"
+          flags=(--can-skip)
+          if [[ "$LABELED" == true ]]; then flags+=(--labeled-no-preview); fi
+          git -C pro diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/pro-changes"
+          if ! grep -zEv '(^|/)(docs|tests|e2e)/|^\.github/|^\.changeset/|\.md$|\.(test|spec)\.[cm]?[jt]sx?$' "$RUNNER_TEMP/pro-changes" > /dev/null; then flags+=(--unchanged); fi
+          nb-studio app ensure "$APP_ID" --environment preview --repository "$REPOSITORY" "${flags[@]}" --json > "$RUNNER_TEMP/ensure.json"
+          jq -er '"build=" + ((.result.data.previewSkipped // "") == "" | tostring)' "$RUNNER_TEMP/ensure.json" >> "$GITHUB_OUTPUT"
+      - name: Build Enterprise archive in an isolated container
+        if: steps.ensure.outputs.build == 'true'
+        run: bash .github/nocobase3/build-pro-preview.sh
+      - name: Refresh source PR token
+        id: live
+        if: steps.ensure.outputs.build == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.NOCOBASE_APP_ID }}
+          private-key: ${{ secrets.NOCOBASE_APP_PRIVATE_KEY }}
+          owner: nocobase
+          repositories: nocobase3-pro
+          permission-pull-requests: read
+      - name: Recheck head before upload
+        id: final
+        if: steps.ensure.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ steps.live.outputs.token }}
+        run: bash .github/nocobase3/pro-preview-gate.sh
+      - name: Upload and deploy
+        if: steps.final.outputs.eligible == 'true'
+        run: |
+          if [[ "${{ steps.final.outputs.labeled }}" == true ]]; then
+            nb-studio app ensure "$APP_ID" --repository "$REPOSITORY" --environment preview --can-skip --labeled-no-preview
+          else
+            nb-studio deploy --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --file "$RUNNER_TEMP/pro-dist.tar.gz"
+          fi
+      - name: Report failure
+        if: failure() && steps.cli.outcome == 'success'
+        run: nb-studio build status --app "$APP_ID" --repository "$REPOSITORY" --sha "$HEAD_SHA" --state failed --logs "$LOGS"
