@@ -33,3 +33,6 @@ if grep -Eq '^(dist/)?(config\.ya?ml|\.npmrc|\.env)$' "$RUNNER_TEMP/pro-entries"
   echo '::error::Archive contains private application configuration'
   exit 1
 fi
+grep -Fxq dist/node_modules/@nocobase/db-sqlite/package.json "$RUNNER_TEMP/pro-entries"
+tar -xOzf "$RUNNER_TEMP/pro-dist.tar.gz" dist/package.json | jq -e '.nocobase.edition == "enterprise"' >/dev/null
+echo "Enterprise preview archive: $bytes bytes" >> "$GITHUB_STEP_SUMMARY"
