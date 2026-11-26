@@ -26,7 +26,7 @@ archive=/preview/pro-preview/storage/exports/dist.tar.gz
 docker exec "$builder" cat "$archive" > "$RUNNER_TEMP/pro-dist.tar.gz"
 bytes="$(stat -c %s "$RUNNER_TEMP/pro-dist.tar.gz")"
 (( bytes > 0 && bytes <= 268435456 )) || { echo "::error::Archive size $bytes exceeds the Studio upload limit or is empty"; exit 1; }
-tar -tzf "$RUNNER_TEMP/pro-dist.tar.gz" > "$RUNNER_TEMP/pro-entries"
+tar --warning=no-unknown-keyword -tzf "$RUNNER_TEMP/pro-dist.tar.gz" > "$RUNNER_TEMP/pro-entries"
 grep -Fxq config.example.yml "$RUNNER_TEMP/pro-entries"
 grep -Fxq dist/package.json "$RUNNER_TEMP/pro-entries"
 if grep -Eq '^(dist/)?(config\.ya?ml|\.npmrc|\.env)$' "$RUNNER_TEMP/pro-entries"; then
@@ -34,5 +34,5 @@ if grep -Eq '^(dist/)?(config\.ya?ml|\.npmrc|\.env)$' "$RUNNER_TEMP/pro-entries"
   exit 1
 fi
 grep -Fxq dist/node_modules/@nocobase/db-sqlite/package.json "$RUNNER_TEMP/pro-entries"
-tar -xOzf "$RUNNER_TEMP/pro-dist.tar.gz" dist/package.json | jq -e '.nocobase.edition == "enterprise"' >/dev/null
-echo "Enterprise preview archive: $bytes bytes" >> "$GITHUB_STEP_SUMMARY"
+tar --warning=no-unknown-keyword -xOzf "$RUNNER_TEMP/pro-dist.tar.gz" dist/package.json | jq -e '.nocobase.edition == "enterprise"' >/dev/null
+echo "Enterprise preview archive: $bytes bytes"
